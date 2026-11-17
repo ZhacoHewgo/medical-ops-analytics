@@ -1,0 +1,115 @@
+CREATE TABLE IF NOT EXISTS `dwd_outpatient_visit_detail` (
+  `dataset_id` VARCHAR(128) NOT NULL,
+  `source_row_number` BIGINT UNSIGNED NOT NULL,
+  `source_batch_date` DATE NOT NULL,
+  `etl_batch_date` DATE NOT NULL,
+  `etl_load_time` DATETIME(6) NOT NULL,
+  `patient_key` CHAR(64) NULL,
+  `visit_id` VARCHAR(128) NOT NULL,
+  `visit_date` DATE NOT NULL,
+  `dept_code` VARCHAR(64) NOT NULL,
+  `visit_type` VARCHAR(64) NOT NULL,
+  `gender` VARCHAR(16) NOT NULL,
+  `age` SMALLINT NULL,
+  `fee_amount` DECIMAL(18,2) NULL,
+  `patient_name` VARCHAR(16) NULL,
+  `id_card` VARCHAR(16) NULL,
+  `phone` VARCHAR(16) NULL,
+  PRIMARY KEY (`dataset_id`,`visit_id`),
+  KEY `ix_outpatient_date` (`dataset_id`,`visit_date`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
+CREATE TABLE IF NOT EXISTS `dwd_inpatient_visit_detail` (
+  `dataset_id` VARCHAR(128) NOT NULL,
+  `source_row_number` BIGINT UNSIGNED NOT NULL,
+  `source_batch_date` DATE NOT NULL,
+  `etl_batch_date` DATE NOT NULL,
+  `etl_load_time` DATETIME(6) NOT NULL,
+  `patient_key` CHAR(64) NULL,
+  `visit_id` VARCHAR(128) NOT NULL,
+  `admit_date` DATE NOT NULL,
+  `discharge_date` DATE NULL,
+  `dept_code` VARCHAR(64) NOT NULL,
+  `gender` VARCHAR(16) NOT NULL,
+  `age` SMALLINT NULL,
+  `stay_days` DECIMAL(10,2) NULL,
+  `total_fee` DECIMAL(18,2) NULL,
+  `drug_fee` DECIMAL(18,2) NULL,
+  `consumable_fee` DECIMAL(18,2) NULL,
+  `disease_code` VARCHAR(64) NOT NULL,
+  `patient_name` VARCHAR(16) NULL,
+  `id_card` VARCHAR(16) NULL,
+  `phone` VARCHAR(16) NULL,
+  PRIMARY KEY (`dataset_id`,`visit_id`),
+  KEY `ix_inpatient_date` (`dataset_id`,`admit_date`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
+CREATE TABLE IF NOT EXISTS `dwd_charge_detail` (
+  `dataset_id` VARCHAR(128) NOT NULL,
+  `source_row_number` BIGINT UNSIGNED NOT NULL,
+  `source_batch_date` DATE NOT NULL,
+  `etl_batch_date` DATE NOT NULL,
+  `etl_load_time` DATETIME(6) NOT NULL,
+  `patient_key` CHAR(64) NULL,
+  `charge_id` VARCHAR(128) NOT NULL,
+  `visit_id` VARCHAR(128) NULL,
+  `visit_type` VARCHAR(64) NOT NULL,
+  `dept_code` VARCHAR(64) NOT NULL,
+  `fee_date` DATE NOT NULL,
+  `fee_type_code` VARCHAR(64) NOT NULL,
+  `amount` DECIMAL(18,2) NULL,
+  PRIMARY KEY (`dataset_id`,`charge_id`),
+  KEY `ix_charge_date` (`dataset_id`,`fee_date`),
+  KEY `ix_charge_visit` (`dataset_id`,`visit_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
+CREATE TABLE IF NOT EXISTS `dwd_emr_record_detail` (
+  `dataset_id` VARCHAR(128) NOT NULL,
+  `source_row_number` BIGINT UNSIGNED NOT NULL,
+  `source_batch_date` DATE NOT NULL,
+  `etl_batch_date` DATE NOT NULL,
+  `etl_load_time` DATETIME(6) NOT NULL,
+  `patient_key` CHAR(64) NULL,
+  `record_id` VARCHAR(128) NOT NULL,
+  `visit_id` VARCHAR(128) NULL,
+  `dept_code` VARCHAR(64) NOT NULL,
+  `visit_date` DATE NOT NULL,
+  `disease_code` VARCHAR(64) NOT NULL,
+  PRIMARY KEY (`dataset_id`,`record_id`),
+  KEY `ix_emr_date` (`dataset_id`,`visit_date`),
+  KEY `ix_emr_visit` (`dataset_id`,`visit_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
+CREATE TABLE IF NOT EXISTS `dwd_lis_report_detail` (
+  `dataset_id` VARCHAR(128) NOT NULL,
+  `source_row_number` BIGINT UNSIGNED NOT NULL,
+  `source_batch_date` DATE NOT NULL,
+  `etl_batch_date` DATE NOT NULL,
+  `etl_load_time` DATETIME(6) NOT NULL,
+  `patient_key` CHAR(64) NULL,
+  `report_id` VARCHAR(128) NOT NULL,
+  `visit_id` VARCHAR(128) NULL,
+  `report_date` DATE NOT NULL,
+  PRIMARY KEY (`dataset_id`,`report_id`),
+  KEY `ix_lis_date` (`dataset_id`,`report_date`),
+  KEY `ix_lis_visit` (`dataset_id`,`visit_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
+CREATE TABLE IF NOT EXISTS `dwd_clean_audit` (
+  `dataset_id` VARCHAR(128) NOT NULL,
+  `table_name` VARCHAR(64) NOT NULL,
+  `clean_run_id` CHAR(36) NOT NULL,
+  `batch_date` DATE NOT NULL,
+  `rules_version` VARCHAR(64) NOT NULL,
+  `mapping_version` VARCHAR(64) NOT NULL,
+  `privacy_key_id` VARCHAR(64) NOT NULL,
+  `source_rows` BIGINT UNSIGNED NOT NULL,
+  `accepted_rows` BIGINT UNSIGNED NOT NULL,
+  `duplicate_removed` BIGINT UNSIGNED NOT NULL,
+  `quarantined_rows` BIGINT UNSIGNED NOT NULL,
+  `source_sha256` CHAR(64) NOT NULL,
+  `result_sha256` CHAR(64) NOT NULL,
+  `stats_json` JSON NOT NULL,
+  `updated_at` DATETIME(6) NOT NULL,
+  PRIMARY KEY (`dataset_id`,`table_name`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;

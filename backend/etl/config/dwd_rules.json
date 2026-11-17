@@ -1,0 +1,340 @@
+{
+  "rules_version": "node07-rules-v1",
+  "mapping_version": "node07-sim-mapping-v1",
+  "approved_complete_intervals": [],
+  "tables": {
+    "dwd_outpatient_visit_detail": {
+      "short": "outpatient",
+      "source": "his_outpatient",
+      "id_column": "visit_id",
+      "date_column": "visit_date",
+      "columns": [
+        "dataset_id",
+        "source_row_number",
+        "source_batch_date",
+        "etl_batch_date",
+        "etl_load_time",
+        "patient_key",
+        "visit_id",
+        "visit_date",
+        "dept_code",
+        "visit_type",
+        "gender",
+        "age",
+        "fee_amount",
+        "patient_name",
+        "id_card",
+        "phone"
+      ],
+      "mapping_columns": [
+        "dept_code",
+        "visit_type",
+        "gender"
+      ]
+    },
+    "dwd_inpatient_visit_detail": {
+      "short": "inpatient",
+      "source": "his_inpatient",
+      "id_column": "visit_id",
+      "date_column": "admit_date",
+      "columns": [
+        "dataset_id",
+        "source_row_number",
+        "source_batch_date",
+        "etl_batch_date",
+        "etl_load_time",
+        "patient_key",
+        "visit_id",
+        "admit_date",
+        "discharge_date",
+        "dept_code",
+        "gender",
+        "age",
+        "stay_days",
+        "total_fee",
+        "drug_fee",
+        "consumable_fee",
+        "disease_code",
+        "patient_name",
+        "id_card",
+        "phone"
+      ],
+      "mapping_columns": [
+        "dept_code",
+        "gender",
+        "disease_code"
+      ]
+    },
+    "dwd_charge_detail": {
+      "short": "charge",
+      "source": "his_charge",
+      "id_column": "charge_id",
+      "date_column": "fee_date",
+      "columns": [
+        "dataset_id",
+        "source_row_number",
+        "source_batch_date",
+        "etl_batch_date",
+        "etl_load_time",
+        "patient_key",
+        "charge_id",
+        "visit_id",
+        "visit_type",
+        "dept_code",
+        "fee_date",
+        "fee_type_code",
+        "amount"
+      ],
+      "mapping_columns": [
+        "dept_code",
+        "visit_type",
+        "fee_type_code"
+      ]
+    },
+    "dwd_emr_record_detail": {
+      "short": "emr",
+      "source": "emr_record",
+      "id_column": "record_id",
+      "date_column": "visit_date",
+      "columns": [
+        "dataset_id",
+        "source_row_number",
+        "source_batch_date",
+        "etl_batch_date",
+        "etl_load_time",
+        "patient_key",
+        "record_id",
+        "visit_id",
+        "dept_code",
+        "visit_date",
+        "disease_code"
+      ],
+      "mapping_columns": [
+        "dept_code",
+        "disease_code"
+      ]
+    },
+    "dwd_lis_report_detail": {
+      "short": "lis",
+      "source": "lis_report",
+      "id_column": "report_id",
+      "date_column": "report_date",
+      "columns": [
+        "dataset_id",
+        "source_row_number",
+        "source_batch_date",
+        "etl_batch_date",
+        "etl_load_time",
+        "patient_key",
+        "report_id",
+        "visit_id",
+        "report_date"
+      ],
+      "mapping_columns": []
+    }
+  },
+  "mappings": {
+    "dept_code": {
+      "SIM_DEPT_01": "SIM_DEPT_01",
+      "SIM_DEPT_02": "SIM_DEPT_02",
+      "SIM_DEPT_03": "SIM_DEPT_03",
+      "SIM_DEPT_04": "SIM_DEPT_04",
+      "SIM_科室1_别名": "SIM_DEPT_01",
+      "SIM_科室2_别名": "SIM_DEPT_02",
+      "SIM_科室3_别名": "SIM_DEPT_03",
+      "SIM_科室4_别名": "SIM_DEPT_04"
+    },
+    "visit_type": {
+      "OUTPATIENT": "OUTPATIENT",
+      "INPATIENT": "INPATIENT"
+    },
+    "gender": {
+      "M": "M",
+      "F": "F"
+    },
+    "disease_code": {
+      "SIM_DX_01": "SIM_DX_01",
+      "SIM_DX_02": "SIM_DX_02",
+      "SIM_DX_03": "SIM_DX_03",
+      "SIM_DX_04": "SIM_DX_04",
+      "SIM_DX_05": "SIM_DX_05"
+    },
+    "fee_type_code": {
+      "SERVICE": "SERVICE",
+      "DRUG": "DRUG",
+      "CONSUMABLE": "CONSUMABLE"
+    }
+  },
+  "rules": [
+    {
+      "rule_id": "outpatient.NULL",
+      "table": "dwd_outpatient_visit_detail",
+      "type": "NULL"
+    },
+    {
+      "rule_id": "outpatient.DUPLICATE",
+      "table": "dwd_outpatient_visit_detail",
+      "type": "DUPLICATE"
+    },
+    {
+      "rule_id": "outpatient.VALUE_RANGE",
+      "table": "dwd_outpatient_visit_detail",
+      "type": "VALUE_RANGE"
+    },
+    {
+      "rule_id": "outpatient.VOLUME_WAVE",
+      "table": "dwd_outpatient_visit_detail",
+      "type": "VOLUME_WAVE"
+    },
+    {
+      "rule_id": "outpatient.RECONCILE",
+      "table": "dwd_outpatient_visit_detail",
+      "type": "RECONCILE"
+    },
+    {
+      "rule_id": "inpatient.NULL",
+      "table": "dwd_inpatient_visit_detail",
+      "type": "NULL"
+    },
+    {
+      "rule_id": "inpatient.DUPLICATE",
+      "table": "dwd_inpatient_visit_detail",
+      "type": "DUPLICATE"
+    },
+    {
+      "rule_id": "inpatient.VALUE_RANGE",
+      "table": "dwd_inpatient_visit_detail",
+      "type": "VALUE_RANGE"
+    },
+    {
+      "rule_id": "inpatient.VOLUME_WAVE",
+      "table": "dwd_inpatient_visit_detail",
+      "type": "VOLUME_WAVE"
+    },
+    {
+      "rule_id": "inpatient.RECONCILE",
+      "table": "dwd_inpatient_visit_detail",
+      "type": "RECONCILE"
+    },
+    {
+      "rule_id": "charge.NULL",
+      "table": "dwd_charge_detail",
+      "type": "NULL"
+    },
+    {
+      "rule_id": "charge.DUPLICATE",
+      "table": "dwd_charge_detail",
+      "type": "DUPLICATE"
+    },
+    {
+      "rule_id": "charge.VALUE_RANGE",
+      "table": "dwd_charge_detail",
+      "type": "VALUE_RANGE"
+    },
+    {
+      "rule_id": "charge.VOLUME_WAVE",
+      "table": "dwd_charge_detail",
+      "type": "VOLUME_WAVE"
+    },
+    {
+      "rule_id": "charge.RECONCILE",
+      "table": "dwd_charge_detail",
+      "type": "RECONCILE"
+    },
+    {
+      "rule_id": "emr.NULL",
+      "table": "dwd_emr_record_detail",
+      "type": "NULL"
+    },
+    {
+      "rule_id": "emr.DUPLICATE",
+      "table": "dwd_emr_record_detail",
+      "type": "DUPLICATE"
+    },
+    {
+      "rule_id": "emr.VALUE_RANGE",
+      "table": "dwd_emr_record_detail",
+      "type": "VALUE_RANGE"
+    },
+    {
+      "rule_id": "emr.VOLUME_WAVE",
+      "table": "dwd_emr_record_detail",
+      "type": "VOLUME_WAVE"
+    },
+    {
+      "rule_id": "emr.RECONCILE",
+      "table": "dwd_emr_record_detail",
+      "type": "RECONCILE"
+    },
+    {
+      "rule_id": "lis.NULL",
+      "table": "dwd_lis_report_detail",
+      "type": "NULL"
+    },
+    {
+      "rule_id": "lis.DUPLICATE",
+      "table": "dwd_lis_report_detail",
+      "type": "DUPLICATE"
+    },
+    {
+      "rule_id": "lis.VALUE_RANGE",
+      "table": "dwd_lis_report_detail",
+      "type": "VALUE_RANGE"
+    },
+    {
+      "rule_id": "lis.VOLUME_WAVE",
+      "table": "dwd_lis_report_detail",
+      "type": "VOLUME_WAVE"
+    },
+    {
+      "rule_id": "lis.RECONCILE",
+      "table": "dwd_lis_report_detail",
+      "type": "RECONCILE"
+    },
+    {
+      "rule_id": "outpatient.MAPPING",
+      "table": "dwd_outpatient_visit_detail",
+      "type": "MAPPING"
+    },
+    {
+      "rule_id": "inpatient.MAPPING",
+      "table": "dwd_inpatient_visit_detail",
+      "type": "MAPPING"
+    },
+    {
+      "rule_id": "charge.MAPPING",
+      "table": "dwd_charge_detail",
+      "type": "MAPPING"
+    },
+    {
+      "rule_id": "emr.MAPPING",
+      "table": "dwd_emr_record_detail",
+      "type": "MAPPING"
+    },
+    {
+      "rule_id": "outpatient.PRIVACY",
+      "table": "dwd_outpatient_visit_detail",
+      "type": "PRIVACY"
+    },
+    {
+      "rule_id": "inpatient.PRIVACY",
+      "table": "dwd_inpatient_visit_detail",
+      "type": "PRIVACY"
+    },
+    {
+      "rule_id": "charge.PRIVACY",
+      "table": "dwd_charge_detail",
+      "type": "PRIVACY"
+    },
+    {
+      "rule_id": "emr.PRIVACY",
+      "table": "dwd_emr_record_detail",
+      "type": "PRIVACY"
+    },
+    {
+      "rule_id": "lis.PRIVACY",
+      "table": "dwd_lis_report_detail",
+      "type": "PRIVACY"
+    }
+  ]
+}

@@ -1,0 +1,4 @@
+PyMySQL[rsa]>=1.1,<2
+pandas>=2.2,<3
+APScheduler>=3.10,<4
+-r ../../scripts/data/requirements.txt

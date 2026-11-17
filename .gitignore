@@ -1,0 +1,26 @@
+.venv/
+backend/.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+frontend/node_modules/
+frontend/dist/
+.coordination/
+.env
+.env.*
+!.env.example
+.DS_Store
+
+# Local data and execution evidence must not be staged.
+/data/mock_his/
+/data/files/
+/data/generated/
+/data/derived/
+/backend/etl/logs/
+/etl/logs/
+/artifacts/
+.coverage*
+htmlcov/
+
+# Project-local runtime binaries and generated database state.
+/.runtime/
