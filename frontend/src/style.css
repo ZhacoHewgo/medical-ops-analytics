@@ -10,7 +10,7 @@
   --border: #dce6ec;
 }
 * { box-sizing: border-box; }
-body { margin: 0; min-width: 280px; }
+body { margin: 0; min-width: 280px; max-width: 100%; overflow-x: hidden; }
 button, input, select { font: inherit; }
 button { cursor: pointer; }
 button:disabled, select:disabled { cursor: not-allowed; opacity: .55; }
@@ -63,10 +63,12 @@ input, select { min-width: 0; width: 100%; height: 42px; padding: 8px 10px; back
 dt { color: var(--muted); }
 .scope-card dt { min-width: 28px; }
 dd { overflow-wrap: anywhere; }
-.charts-grid { display: grid; grid-template-columns: 1.25fr 1fr; gap: 20px; margin-bottom: 20px; }
-.chart-panel { padding: 22px 22px 14px; }
-.chart-scroll { max-height: 388px; overflow-y: auto; min-width: 0; }
-.chart { width: 100%; min-width: 0; }
+.charts-grid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 20px; margin-bottom: 20px; min-width: 0; width: 100%; max-width: 100%; }
+.chart-panel { padding: 22px 22px 14px; min-width: 0; max-width: 100%; overflow: hidden; }
+.chart-scroll { max-height: 388px; overflow-y: auto; overflow-x: hidden; min-width: 0; max-width: 100%; }
+.chart { width: 100%; min-width: 0; max-width: 100%; overflow: hidden; }
+.chart > div { max-width: 100% !important; }
+.chart canvas { max-width: 100% !important; }
 .chart-table { border-top: 1px solid #edf1f4; padding: 12px 0 0; margin-top: 10px; font-size: .75rem; }
 summary { color: #456678; cursor: pointer; line-height: 1.65; }
 .table-scroll { max-height: 320px; overflow: auto; margin-top: 12px; }
@@ -100,24 +102,27 @@ tbody th { max-width: 160px; }
 .skip-link { position: fixed; left: 16px; top: -100px; z-index: 10; padding: 12px; background: white; color: #136b70; }
 .skip-link:focus { top: 12px; }
 @media (max-width: 1050px) {
-  .filter-form { grid-template-columns: 1fr 1fr; }
+  .filter-form { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
   .filter-actions { justify-content: flex-end; }
-  .charts-grid { grid-template-columns: 1fr; }
+  .charts-grid { grid-template-columns: minmax(0, 1fr); }
   .quality-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
-@media (max-width: 680px) {
+@media (max-width: 800px) {
   .topbar-inner { padding: 16px 20px; }
-  .workspace { padding: 26px 16px 20px; }
+  .workspace { padding: 26px 16px 20px; overflow-x: hidden; width: 100%; max-width: 100%; }
   .page-heading { align-items: flex-start; flex-direction: column; }
   .available-range { text-align: left; }
-  .overview-row { grid-template-columns: 1fr; gap: 14px; }
-  .filter-panel, .chart-panel, .quality-panel, .kpi-card, .scope-card { padding: 20px 16px; }
+  .overview-row { grid-template-columns: minmax(0, 1fr); gap: 14px; }
+  .filter-panel, .chart-panel, .quality-panel, .kpi-card, .scope-card { padding: 20px 16px; min-width: 0; max-width: 100%; }
   .filter-panel .section-heading { flex-direction: column; align-items: flex-start; gap: 4px; }
-  .filter-form { grid-template-columns: 1fr; gap: 14px; }
+  .filter-form { grid-template-columns: minmax(0, 1fr); gap: 14px; }
   .filter-actions { justify-content: stretch; }
   .filter-actions .button { flex: 1; }
+  .charts-grid { grid-template-columns: minmax(0, 1fr); width: 100%; max-width: 100%; }
+  .chart-panel, .chart { width: 100%; max-width: 100%; min-width: 0; overflow: hidden; }
+  .chart-scroll { width: 100%; max-width: 100%; min-width: 0; max-height: 388px; overflow-y: auto; overflow-x: hidden; }
   .quality-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
-  .quality-item { padding: 12px; }
+  .quality-item { padding: 12px; min-width: 0; }
   .source-details dl > div { grid-template-columns: 1fr; gap: 4px; }
   .brand { font-size: .85rem; }
   .page-footer { text-align: left; }
