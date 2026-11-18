@@ -13,7 +13,8 @@ frontend/dist/
 
 # Local data and execution evidence must not be staged.
 /data/mock_his/
-/data/files/
+/data/files/*
+!/data/files/finance_excel.csv
 /data/generated/
 /data/derived/
 /backend/etl/logs/

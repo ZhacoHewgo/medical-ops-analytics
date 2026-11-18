@@ -1,0 +1,108 @@
+{
+  "source": "课程平台下载后保留在项目的六份CSV；生成来源未独立验证",
+  "files": [
+    {
+      "path": "data/files/finance_excel.csv",
+      "sha256": "ddcab4e7dc4983ebc7a42dcb6651efae098fffc69a7d4d999cb2f32923cd714f",
+      "bytes": 46036,
+      "columns": [
+        "record_id",
+        "stat_date",
+        "dept_code",
+        "revenue",
+        "drug_revenue",
+        "consumable_revenue"
+      ],
+      "in_public_repository": true
+    },
+    {
+      "path": "data/mock_his/emr_record.csv",
+      "sha256": "e260820d9306b81d514dcc24e890db5e482b19b613ab00348490cdac29757d98",
+      "bytes": 130233,
+      "columns": [
+        "record_id",
+        "patient_id",
+        "visit_id",
+        "dept_code",
+        "visit_date",
+        "diagnosis",
+        "disease_code"
+      ],
+      "in_public_repository": false
+    },
+    {
+      "path": "data/mock_his/his_charge.csv",
+      "sha256": "f1797f50d554476392d312e4bda55c6d1841f63491a4097a003a6d0ddf99d603",
+      "bytes": 2944286,
+      "columns": [
+        "charge_id",
+        "visit_id",
+        "patient_id",
+        "visit_type",
+        "dept_code",
+        "fee_date",
+        "fee_type_code",
+        "fee_type_name",
+        "amount"
+      ],
+      "in_public_repository": false
+    },
+    {
+      "path": "data/mock_his/his_inpatient.csv",
+      "sha256": "b2daedbd8642de550a1db6eb1f16801e4858374af9cd805376879a440a1fa23a",
+      "bytes": 182135,
+      "columns": [
+        "visit_id",
+        "patient_id",
+        "patient_name",
+        "id_card",
+        "phone",
+        "gender",
+        "age",
+        "dept_code",
+        "bed_no",
+        "admit_date",
+        "discharge_date",
+        "stay_days",
+        "total_fee",
+        "drug_fee",
+        "consumable_fee",
+        "disease_code"
+      ],
+      "in_public_repository": false
+    },
+    {
+      "path": "data/mock_his/his_outpatient.csv",
+      "sha256": "cc027ed263afa1a99550a66b5502cdac88b20ca8b082414f0e2ceacbd50ce637",
+      "bytes": 793237,
+      "columns": [
+        "visit_id",
+        "patient_id",
+        "patient_name",
+        "id_card",
+        "phone",
+        "gender",
+        "age",
+        "dept_code",
+        "visit_date",
+        "visit_type",
+        "fee_amount"
+      ],
+      "in_public_repository": false
+    },
+    {
+      "path": "data/mock_his/lis_report.csv",
+      "sha256": "040d1fcdb40b7c5c2cd7bd79395dc6419f1bbf546329cc8622df39f4b8b55f69",
+      "bytes": 166349,
+      "columns": [
+        "report_id",
+        "patient_id",
+        "visit_id",
+        "item_name",
+        "result_text",
+        "report_date"
+      ],
+      "in_public_repository": false
+    }
+  ]
+}

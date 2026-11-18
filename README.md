@@ -1,22 +1,48 @@
-# 医疗运营分析 · 课程协作版
+# 医疗运营分析课程项目
 
-课程项目的公开开发仓库。当前可演示门诊总量、日期趋势、科室排行和筛选；包含已在本地验收的数据采集、清洗、质量检查和公共维表代码。节点 8 宽表、后续集市、完整权限和主题看板仍在开发。课内验收以课程平台和教师要求为准。
+以课程平台下载的数据开展开发和对账。当前公开源码覆盖已验收的采集、清洗、质量检查、四张维表及证书桥接，以及门诊看板演示；完整主题集市、指标服务、鉴权和主题页面尚未全部实现。宽表仍待集成验收。
 
-**组员先读：[三人分工与 AI 上手手册](TEAM.md)**。首次只领一张任务卡，完成后用 Pull Request（PR）发起代码审阅。
+## 组员入口
 
-## 从零跑起门诊演示
+- [三人分工和 AI 操作步骤](TEAM.md)：任务、文件归属、交付物和交接顺序。
+- [平台数据怎么准备](data/README.md)：仓库已有文件、另外五份文件的放置位置。
+- [数据缺口与对应课程要求](docs/DATA_GAPS.md)：缺什么、影响哪个节点、暂时如何处理。
+- [课程节点与当前交付边界](docs/COURSE_SCOPE.md)：区分本轮任务和后续目标。
 
-准备 Git、Python 3.11+、Node.js 24。解压 GitHub 的 Download ZIP 也能本地启动，但要交 PR，请用 Git 或 GitHub Desktop 克隆。以下命令在项目根目录运行，适用于 macOS、Linux 或 Windows Git Bash。Windows 用 `.venv/Scripts/python.exe` 替换 `.venv/bin/python`。
+本仓库不上传生成器产出的合成数据文件，不引入外部公开数据。保留生成器源码及原有自动化测试，因为它们属于既有课程代码；本轮启动教程不运行生成器。
+
+## 先获取平台数据
+
+仓库内已有原始平台财务汇总文件 `data/files/finance_excel.csv`，910 行，未改内容，可供 A 组员立即做财务日汇总。
+
+另外五份平台明细含患者相关字段，尚无其全部虚构、允许公开再分发的明确依据，因此未进入公开仓库。组员从课程平台的数据材料下载对应数据集，按 [data/README.md](data/README.md) 放置。文件只能在本地读取；不要提交它们或把整表发给在线 AI。
+
+只有财务文件时，A 可以先工作，B 可以先做接口/权限说明与现有单元测试；C 需要下载门诊 CSV 后才能看见真实平台样例的门诊看板。文件未准备好时显示错误，不用财务数冒充门诊量。
+
+## 用平台门诊 CSV 启动
+
+准备 Python 3.11+、Node.js 24 和 Git。克隆仓库后，在根目录执行。Python 环境必须只属于本项目。
+
+### macOS 或 Linux
 
 ```sh
 python3 -m venv .venv
-.venv/bin/python -m pip install -r backend/requirements.txt -r scripts/data/requirements.txt
-.venv/bin/python scripts/data/generate_mock.py --months 12
-PYTHONPATH=backend .venv/bin/python -c 'from pathlib import Path; from app.outpatient import DEFAULT_DATA_PATH; from etl.jobs.build_outpatient import build_outpatient; build_outpatient(Path("data/generated/synthetic-v1_seed42_2025-01-01_12m/mock_his/his_outpatient.csv"), DEFAULT_DATA_PATH)'
+.venv/bin/python -m pip install -r backend/requirements.txt
+PYTHONPATH=backend .venv/bin/python -m etl.jobs.build_outpatient
 PYTHONPATH=backend .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8765
 ```
 
-Windows 如果没有 `python3`，可用 `py -3` 创建虚拟环境。保持后端窗口运行，再开一个终端：
+### Windows PowerShell
+
+```powershell
+py -3 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r backend/requirements.txt
+$env:PYTHONPATH = "backend"
+.\.venv\Scripts\python.exe -m etl.jobs.build_outpatient
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8765
+```
+
+加工命令只读 `data/mock_his/his_outpatient.csv`，生成本机 `data/derived/outpatient.json`，不修改平台 CSV。该聚合文件也不提交仓库。保持后端窗口运行，另开终端：
 
 ```sh
 cd frontend
@@ -24,12 +50,20 @@ npm ci
 npm run dev
 ```
 
-打开前端终端显示的本地网址，核对门诊总量、趋势和科室排行。先访问 `http://127.0.0.1:8765/health` 排查后端是否启动；看板返回 503 时，检查聚合文件是否成功生成。聚合格式沿用旧版固定的 `meta.source_file` 字段；本教程实际输入是命令中明确指定的合成 CSV。演示无需 MySQL、账号或模型 API Key。
+打开前端终端显示的网址。后端健康地址是 `http://127.0.0.1:8765/health`。看板 503 通常要先检查加工步骤是否成功；不要通过显示固定数字掩盖错误。此门诊切片不依赖 MySQL，也不需要模型 API Key；后续数仓实库验收需要负责人安排隔离测试环境。
 
-## 自测
+## 本轮自测
 
-- 后端和合成数据：根目录执行 `PYTHONPATH=backend .venv/bin/python -m pytest -q backend/tests tests/data`。先执行上方 12 个月合成数据生成命令，ODS 回归会读取这套默认样例。未配置隔离 MySQL 时，实库用例可能跳过；报告应写清通过、失败和跳过各多少项。
-- 前端：在 `frontend` 目录执行 `npm test`、`npm run lint`、`npm run build`。
-- 要做 MySQL 实库验证，先和负责人对齐本地隔离测试环境。首次任务用小型纯合成样例或现有测试即可，不需要连接课程云数据库。
+在 macOS/Linux 根目录执行以下不依赖外置数据集的应用测试：
 
-公开仓库只收源码、手写的纯合成测试样例和公开协作说明。不提交原始课程数据、生成的数据文件、数据库备份、口令、模型密钥、测试日志或课程提交材料。
+```sh
+PYTHONPATH=backend .venv/bin/python -m pytest -q backend/tests/test_api.py backend/tests/test_application.py backend/tests/test_outpatient.py backend/tests/test_s0_004_environment.py
+```
+
+PowerShell 先设置 `$env:PYTHONPATH = "backend"`，再使用 `.\.venv\Scripts\python.exe` 执行同一组 pytest 参数。前端在 `frontend` 目录执行 `npm test`、`npm run lint`、`npm run build`。
+
+原完整 ODS 测试中有两项依赖生成器的默认 12 个月样例；本轮不提供该数据集，不能直接把缺文件导致的失败归咎于平台 CSV。MySQL 实库测试也要先配置专用环境。报告分别写测试通过、失败、跳过和未运行，不能把局部结果写成全项目完成。
+
+## 提交约定
+
+每人独立分支，通过 PR 交付，由负责人统一合并。只提交任务范围内的源码、说明、必要测试；不提交五份患者明细、生成数据、数据库、密钥、日志或课程最终材料。公开仓库不代表已经通过课程平台或教师验收。
