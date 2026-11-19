@@ -170,3 +170,45 @@ test('disposing during a request prevents later UI updates', async () => {
   assert.equal(states.length, 1)
   assert.equal(states[0].status, 'loading')
 })
+
+function previewDashboard() {
+  const data = dashboard()
+  data.meta = {
+    source: 'dwd_visit_detail', batch_date: '2026-01-03',
+    build_run_id: 'b171a123-514b-4566-a955-e29c4794d21e',
+    available_start_date: '2026-01-01', available_end_date: '2026-01-02',
+    department_codes: ['__UNKNOWN__'],
+  }
+  return data
+}
+
+test('preview loader requests the wide-table endpoint and preserves build provenance', async () => {
+  let state
+  const loader = createDashboardLoader({
+    source: 'preview',
+    onChange: value => { state = value },
+    fetchImpl: async url => {
+      assert.equal(url, '/api/dashboard/outpatient-preview')
+      return ok(previewDashboard())
+    },
+  })
+  await loader.load()
+  assert.equal(state.status, 'success')
+  assert.equal(state.data.meta.source, 'dwd_visit_detail')
+})
+
+test('preview rejects a fallback CSV response or missing build identity', () => {
+  assert.throws(() => validateDashboard(dashboard(), 'preview'))
+  assert.throws(() => validateDashboard(previewDashboard(), 'csv'))
+  const stale = previewDashboard()
+  stale.meta.build_run_id = ''
+  assert.throws(() => validateDashboard(stale, 'preview'))
+})
+
+test('an empty preview response must still be inside the certified coverage', () => {
+  const empty = previewDashboard()
+  Object.assign(empty, { outpatient_visits: 0, daily_trend: [], department_ranking: [] })
+  assert.equal(validateDashboard(empty, 'preview').outpatient_visits, 0)
+  empty.filters.end_date = '2026-01-03'
+  assert.throws(() => validateDashboard(empty, 'preview'))
+})
