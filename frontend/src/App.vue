@@ -6,11 +6,9 @@ import { createDashboardLoader } from './api/dashboard.mjs'
 const state = shallowRef({ status: 'idle', data: null, error: '', requestedFilters: {} })
 const meta = shallowRef(null)
 const draft = reactive({ start_date: '', end_date: '', dept_code: '' })
-const preview = new URLSearchParams(window.location.search).get('source') === 'preview'
 const departmentLabel = code => code === '__UNKNOWN__' ? '未标注科室（__UNKNOWN__）' : code
 const formatCount = count => count.toLocaleString('zh-CN')
 const loader = createDashboardLoader({
-  source: preview ? 'preview' : 'csv',
   onChange: value => {
     state.value = value
     if (value.status === 'success') meta.value = value.data.meta
@@ -48,13 +46,13 @@ onBeforeUnmount(loader.dispose)
   <header class="topbar">
     <div class="topbar-inner">
       <div class="brand"><span class="brand-mark" aria-hidden="true">+</span><span>MOPS <span class="brand-divider">/</span> 医疗运营工作台</span></div>
-      <span class="demo-badge"><span aria-hidden="true" class="status-dot"></span>{{ preview ? '节点 8 宽表 · 本地只读预览' : '课程样例数据 · 本地演示' }}</span>
+      <span class="demo-badge"><span aria-hidden="true" class="status-dot"></span>课程样例数据 · 本地演示</span>
     </div>
   </header>
 
   <main id="main" class="workspace" tabindex="-1">
     <section class="page-heading" aria-labelledby="page-title">
-      <div><p class="eyebrow">OUTPATIENT OVERVIEW</p><h1 id="page-title">门诊驾驶舱</h1><p class="lead">看清门诊规模、每日变化与科室分布。</p><a :href="preview ? '/' : '/?source=preview'">{{ preview ? '返回 CSV 看板' : '打开宽表预览' }}</a></div>
+      <div><p class="eyebrow">OUTPATIENT OVERVIEW</p><h1 id="page-title">门诊驾驶舱</h1><p class="lead">看清门诊规模、每日变化与科室分布。</p></div>
       <div v-if="meta" class="available-range"><span>可用数据日期</span><strong>{{ meta.available_start_date }} — {{ meta.available_end_date }}</strong></div>
     </section>
 
@@ -95,15 +93,7 @@ onBeforeUnmount(loader.dispose)
         <section class="panel chart-panel" aria-labelledby="ranking-title"><div class="section-heading"><div><h2 id="ranking-title">科室门诊量排行</h2><p>门诊量降序，同值按代码升序 · 单位：人次</p></div></div><DashboardChart v-if="data.department_ranking.length" kind="ranking" :rows="data.department_ranking" /><p v-else class="chart-empty">当前筛选无科室排行记录</p></section>
       </div>
 
-      <section v-if="preview" class="panel quality-panel" aria-labelledby="build-title">
-        <h2 id="build-title">宽表来源与构建</h2>
-        <dl class="quality-grid">
-          <div class="quality-item"><dt>来源表</dt><dd>{{ data.meta.source }}</dd></div>
-          <div class="quality-item"><dt>批次</dt><dd>{{ data.meta.batch_date }}</dd></div>
-          <div class="quality-item"><dt>构建号</dt><dd class="hash">{{ data.meta.build_run_id }}</dd></div>
-        </dl>
-      </section>
-      <section v-else class="panel quality-panel" aria-labelledby="quality-title"><div class="section-heading"><div><h2 id="quality-title">数据质量摘要</h2><p>全源统计，不随上方日期与科室筛选变化。</p></div><span class="scope-pill">全源</span></div><dl class="quality-grid"><div v-for="[key, label, hint] in qualityItems" :key="key" class="quality-item"><dt>{{ label }}</dt><dd>{{ formatCount(data.meta.quality[key]) }}</dd><p>{{ hint }}</p></div></dl><p class="quality-note">原始行数 = 无效标识 + 无效日期 + 冲突记录 + 移除重复 + 保留就诊；未标注科室属于保留就诊的子集。</p>
+      <section class="panel quality-panel" aria-labelledby="quality-title"><div class="section-heading"><div><h2 id="quality-title">数据质量摘要</h2><p>全源统计，不随上方日期与科室筛选变化。</p></div><span class="scope-pill">全源</span></div><dl class="quality-grid"><div v-for="[key, label, hint] in qualityItems" :key="key" class="quality-item"><dt>{{ label }}</dt><dd>{{ formatCount(data.meta.quality[key]) }}</dd><p>{{ hint }}</p></div></dl><p class="quality-note">原始行数 = 无效标识 + 无效日期 + 冲突记录 + 移除重复 + 保留就诊；未标注科室属于保留就诊的子集。</p>
         <details class="source-details"><summary>数据来源与生成信息</summary><dl><div><dt>来源文件</dt><dd>{{ data.meta.source_file }}</dd></div><div><dt>生成时间</dt><dd>{{ data.meta.generated_at }}</dd></div><div><dt>源文件 SHA256</dt><dd class="hash">{{ data.meta.source_sha256 }}</dd></div></dl></details>
       </section>
     </template>

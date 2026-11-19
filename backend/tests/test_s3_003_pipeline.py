@@ -76,7 +76,7 @@ def test_new_error_catalog_matches_build():
 
 
 @pytest.mark.parametrize('invalid_amount', [False, True], ids=['clean', 'hard-fail'])
-def test_mysql_dwd_cli_self_contained(mysql_pipeline, invalid_amount, monkeypatch):
+def test_mysql_dwd_cli_self_contained(mysql_pipeline, invalid_amount):
     dataset, batch, selection, quality_path = mysql_pipeline
     path = quality_path.parent / build._report_name(batch)
     assert not path.exists() and not path.is_symlink()
@@ -137,32 +137,6 @@ def test_mysql_dwd_cli_self_contained(mysql_pipeline, invalid_amount, monkeypatc
                 }
                 cursor.execute('SELECT COUNT(*), SUM(amount) FROM dwd_charge_detail WHERE dataset_id=%s', (dataset,))
                 assert cursor.fetchone() == (3, Decimal('30.75'))
-                cursor.execute(
-                    "SELECT visit_date, dept_code, COUNT(*) FROM dwd_visit_detail "
-                    "WHERE dataset_id=%s AND visit_type='OUTPATIENT' GROUP BY visit_date, dept_code",
-                    (dataset,),
-                )
-                reference = cursor.fetchall()
-            from fastapi.testclient import TestClient
-            from app.main import create_app
-
-            monkeypatch.setenv("OUTPATIENT_PREVIEW_ENABLED", "1")
-            monkeypatch.setenv("OUTPATIENT_PREVIEW_ENV", "test")
-            monkeypatch.setenv("OUTPATIENT_PREVIEW_DATASET_ID", dataset)
-            monkeypatch.setenv("OUTPATIENT_PREVIEW_BATCH_DATE", batch)
-            monkeypatch.setenv("OUTPATIENT_PREVIEW_BUILD_RUN_ID", built["build_run_id"])
-            with TestClient(create_app(), client=("127.0.0.1", 50000)) as client:
-                result = client.get("/api/dashboard/outpatient-preview")
-                assert result.status_code == 200
-                payload = result.json()["data"]
-                assert payload["meta"]["build_run_id"] == built["build_run_id"]
-                assert payload["outpatient_visits"] == sum(n for _, _, n in reference)
-                by_day, by_dept = {}, {}
-                for day, dept, n in reference:
-                    by_day[day.isoformat()] = by_day.get(day.isoformat(), 0) + n
-                    by_dept[dept] = by_dept.get(dept, 0) + n
-                assert {r["date"]: r["visits"] for r in payload["daily_trend"]} == by_day
-                assert {r["dept_code"]: r["visits"] for r in payload["department_ranking"]} == by_dept
     finally:
         try:
             connection.rollback()
