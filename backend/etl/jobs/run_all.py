@@ -1,4 +1,4 @@
-"""Foreground extraction; explicit node 7 quality chain. No DDL or registration."""
+"""Foreground extraction with explicit quality or wide-table chain. No DDL or registration."""
 
 import argparse
 from datetime import date, datetime, timedelta
@@ -34,7 +34,7 @@ def _extract_task(start, end, scheduled, *, through="extract"):
         from etl.jobs.extract_ods import run_extract_all
 
         context = scheduling._CURRENT.get()
-        if through == "quality":
+        if through in ("quality", "dwd"):
             # Run context owns this identity: retries reuse it; next daily run cannot.
             if context is None:
                 raise scheduling.EtlError("ETL_RUN_CONTEXT_MISSING")
@@ -61,7 +61,7 @@ def _extract_task(start, end, scheduled, *, through="extract"):
                 yesterday = datetime.now(scheduling.SHANGHAI).date() - timedelta(days=1)
                 context.scheduled_date = yesterday.isoformat()
             first = last = context.scheduled_date
-        options = {"source_infos": context.pipeline["source_infos"]} if through == "quality" else {}
+        options = {"source_infos": context.pipeline["source_infos"]} if through in ("quality", "dwd") else {}
         result = run_extract_all(first, last, on_event=scheduling._source_event, **options)
         if (type(result) is not dict or result.keys() != scheduling.SOURCES.keys()
                 or any(type(name) is not str for name in result)
@@ -171,6 +171,43 @@ def _quality_task():
         raise _new_error(error, "DQ_INTERNAL_ERROR") from None
 
 
+def _dwd_task(start, end):
+    def dwd():
+        from etl.config.source_config import OdsError
+        from etl.jobs import build_dwd
+
+        try:
+            identity = _pipeline_identity()
+            context = scheduling._CURRENT.get()
+            accepted = identity["accepted_rows"]
+            expected = {
+                build_dwd.VISIT: (accepted["dwd_outpatient_visit_detail"]
+                                  + accepted["dwd_inpatient_visit_detail"]),
+                "dwd_charge_detail": accepted["dwd_charge_detail"],
+            }
+            result = build_dwd._run_build_all_locked(
+                start, end, dataset_id=identity["dataset_id"], batch_date=identity["batch_date"],
+                env=context.env, pipeline=identity,
+            )
+            _pipeline_identity()
+            rows = result.get("rows")
+            if (any(result.get(k) != identity[k] for k in ("dataset_id", "batch_date", "clean_run_id"))
+                    or result.get("env") != context.env or result.get("gate_status") != "PASS"
+                    or type(rows) is not dict or rows != expected
+                    or any(type(count) is not int for count in rows.values())):
+                raise OdsError("N8_STALE")
+            return expected
+        except Exception as error:
+            if isinstance(error, (OdsError, scheduling.EtlError)) and type(error.code) is str:
+                if error.code in scheduling._NODE08_CODES:
+                    raise OdsError(error.code) from None
+                if error.code in {"DWD_SOURCE_MISMATCH", "DWD_PRIVACY_KEY_CHANGED",
+                                  "ETL_RUN_CONTEXT_MISSING"}:
+                    raise OdsError("N8_STALE") from None
+            raise OdsError("N8_INTERNAL_ERROR") from None
+    return dwd
+
+
 def main(argv=None):
     try:
         parser = _SafeParser(description="Extraction with explicit quality chain and foreground scheduling")
@@ -178,16 +215,18 @@ def main(argv=None):
         parser.add_argument("--end")
         parser.add_argument("--env", choices=("dev", "test"), default="dev")
         parser.add_argument("--schedule", action="store_true")
-        parser.add_argument("--through", choices=("extract", "quality"), default="extract")
+        parser.add_argument("--through", choices=("extract", "quality", "dwd"), default="extract")
         args = parser.parse_args(argv)
         _validate_dates(args.start, args.end)
-        if args.schedule and args.start is not None:
+        if args.schedule and (args.start is not None or args.through == "dwd"):
             raise scheduling.EtlError("ETL_ARGUMENTS_INVALID")
         scheduling.register_task("extract_ods", _extract_task(args.start, args.end, args.schedule,
                                                            through=args.through))
-        if args.through == "quality":
+        if args.through in ("quality", "dwd"):
             scheduling.register_task("clean_dwd", _clean_task)
             scheduling.register_task("quality_check", _quality_task)
+        if args.through == "dwd":
+            scheduling.register_task("build_dwd", _dwd_task(args.start, args.end))
         if args.schedule:
             scheduler = scheduling.setup_schedule(env=args.env)
             try:
