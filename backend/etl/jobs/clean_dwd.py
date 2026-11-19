@@ -424,7 +424,8 @@ def _ddl():
             label = 'PRIMARY KEY' if name == 'PRIMARY' else f'KEY `{name}`'
             parts.append(label + ' (' + ','.join(f'`{col}`' for col in columns) + ')')
         statements.append(f'CREATE TABLE IF NOT EXISTS `{table}` (\n  ' + ',\n  '.join(parts) + '\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin')
-    return statements
+    from etl.jobs.build_dwd import new_ddl
+    return statements + new_ddl()
 
 
 def _verify(cursor):
@@ -708,3 +709,13 @@ def load_quality_snapshot_from_cursor(cursor, batch_date=None, *, dataset_id=Non
         result['tables'][table] = dict(source=dict(table=source['table'], columns=list(source['columns'] + META), rows=rows),
                                        dwd=dict(table=table, columns=list(columns), rows=dwd_rows), audit=audits[table])
     return result
+
+
+def build_dwd_visit(start_date, end_date, *, dataset_id=None, batch_date=None, env='dev'):
+    from etl.jobs.build_dwd import _public_partial
+    return _public_partial(start_date,end_date,dataset_id=dataset_id,batch_date=batch_date,env=env,scope='VISIT')
+
+
+def build_dwd_charge(start_date, end_date, *, dataset_id=None, batch_date=None, env='dev'):
+    from etl.jobs.build_dwd import _public_partial
+    return _public_partial(start_date,end_date,dataset_id=dataset_id,batch_date=batch_date,env=env,scope='CHARGE')

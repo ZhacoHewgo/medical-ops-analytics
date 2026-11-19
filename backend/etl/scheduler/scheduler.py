@@ -43,6 +43,14 @@ DQ_CONFIG_INVALID DQ_SNAPSHOT_MISMATCH DQ_STALE DQ_RULE_ERROR DQ_INTERNAL_ERROR
 DQ_REPORT_PATH_INVALID DQ_REPORT_IDENTITY_CONFLICT DQ_REPORT_WRITE_FAILED
 DQ_GATE_FAILED DQ_INSUFFICIENT_EVIDENCE
 """.split())
+_NODE08_CODES = frozenset("""
+N8_ARGUMENTS_INVALID N8_RANGE_NOT_FULL N8_SCHEMA_INVALID N8_MIGRATION_REQUIRED
+N8_INPUT_EMPTY N8_DATE_INVALID N8_DATE_RANGE_INVALID N8_DIMENSION_INVALID N8_UNKNOWN_CODE
+N8_VISIT_REFERENCE_INVALID N8_VISIT_AMBIGUOUS N8_PATIENT_MISMATCH N8_UPSTREAM_GATE_FAILED
+N8_STALE N8_RECONCILE_FAILED N8_AMOUNT_OVERFLOW N8_TX_RETRYABLE N8_TX_FAILED
+N8_ROLLBACK_FAILED N8_COMMIT_UNKNOWN N8_REPORT_PATH_INVALID N8_REPORT_IDENTITY_CONFLICT
+N8_REPORT_WRITE_FAILED N8_RUN_CONTEXT_ACTIVE N8_INTERNAL_ERROR
+""".split())
 _ODS_CODES = _NODE07_CODES | _RETRYABLE | frozenset("""
 ODS_ARGUMENTS_INVALID ODS_BATCH_INVALID ODS_CONFIG_INVALID ODS_COUNT_MISMATCH
 ODS_CSV_HEADER_INVALID ODS_CSV_READ_FAILED ODS_CSV_ROW_INVALID ODS_DATABASE_URL_INVALID
@@ -68,15 +76,15 @@ class EtlError(Exception):
     """Fixed reason codes only; never retain original exception text."""
 
     def __init__(self, code):
-        self.code = code if type(code) is str and code in _ETL_CODES | _ODS_CODES else "ETL_TASK_FAILED"
+        self.code = code if type(code) is str and code in _ETL_CODES | _ODS_CODES | _NODE08_CODES else "ETL_TASK_FAILED"
         super().__init__(self.code)
 
 
 def _safe_code(error):
     if isinstance(error, EtlError):
-        return error.code if type(error.code) is str and error.code in _ETL_CODES | _ODS_CODES else "ETL_TASK_FAILED"
+        return error.code if type(error.code) is str and error.code in _ETL_CODES | _ODS_CODES | _NODE08_CODES else "ETL_TASK_FAILED"
     if isinstance(error, OdsError):
-        return error.code if type(error.code) is str and error.code in _ODS_CODES else "ETL_ODS_FAILED"
+        return error.code if type(error.code) is str and error.code in _ODS_CODES | _NODE08_CODES else "ETL_ODS_FAILED"
     return "ETL_TASK_FAILED"
 
 
@@ -182,7 +190,7 @@ def log_write(name, status, rows, cost_ms, *, code="ETL_OK"):
         raise EtlError("ETL_RUN_CONTEXT_MISSING")
     _name(name)
     if (type(status) is not str or status not in {"START", "SUCCESS", "FAILED", "BLOCKED", "PARTIAL"}
-            or type(code) is not str or code not in _ETL_CODES | _ODS_CODES
+            or type(code) is not str or code not in _ETL_CODES | _ODS_CODES | _NODE08_CODES
             or type(cost_ms) is not int or cost_ms < 0
             or (status == "SUCCESS" and (type(rows) is not int or rows < 0))
             or (status != "SUCCESS" and rows is not None)
@@ -243,8 +251,11 @@ def _execute(name, max_retry):
             return result
         except Exception as error:
             code = _safe_code(error)
-            retry = (isinstance(error, OdsError) and code in _RETRYABLE | _NODE07_RETRYABLE
-                     or not isinstance(error, (OdsError, EtlError)))
+            if name == "build_dwd":
+                retry = isinstance(error, OdsError) and code == "N8_TX_RETRYABLE"
+            else:
+                retry = (isinstance(error, OdsError) and code in _RETRYABLE | _NODE07_RETRYABLE
+                         or not isinstance(error, (OdsError, EtlError)))
             log_write(name, "FAILED", None, _cost(started), code=code)
             if context.committed:
                 log_write(name, "PARTIAL", None, _cost(started), code="ETL_TASK_PARTIAL")

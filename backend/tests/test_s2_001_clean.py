@@ -435,7 +435,7 @@ def test_no_raw_value_in_unknown_public_operator_error(capsys,caplog):
 def test_ddl_file_fixed_and_separate_from_runtime():
     text=(ROOT/'sql/dwd/dwd_tables.sql').read_text()
     assert text==';\n\n'.join(c._ddl())+';\n'
-    assert text.count('CREATE TABLE')==6
+    assert text.count('CREATE TABLE')==8
     assert not any(word in text.upper() for word in ('DROP ','ALTER ','FOREIGN KEY'))
 
 

@@ -113,3 +113,52 @@ CREATE TABLE IF NOT EXISTS `dwd_clean_audit` (
   `updated_at` DATETIME(6) NOT NULL,
   PRIMARY KEY (`dataset_id`,`table_name`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
+CREATE TABLE IF NOT EXISTS `dwd_visit_detail` (
+  `dataset_id` VARCHAR(128) NOT NULL,
+  `visit_type` VARCHAR(64) NOT NULL,
+  `visit_id` VARCHAR(128) NOT NULL,
+  `source_row_number` BIGINT UNSIGNED NOT NULL,
+  `source_batch_date` DATE NOT NULL,
+  `etl_batch_date` DATE NOT NULL,
+  `etl_load_time` DATETIME(6) NOT NULL,
+  `patient_key` CHAR(64) NULL,
+  `visit_date` DATE NOT NULL,
+  `admit_date` DATE NULL,
+  `discharge_date` DATE NULL,
+  `dept_code` VARCHAR(64) NOT NULL,
+  `disease_code` VARCHAR(64) NULL,
+  `gender` VARCHAR(16) NOT NULL,
+  `age` SMALLINT NULL,
+  `source_stay_days` DECIMAL(10,2) NULL,
+  `source_total_fee` DECIMAL(18,2) NULL,
+  `source_drug_fee` DECIMAL(18,2) NULL,
+  `source_consumable_fee` DECIMAL(18,2) NULL,
+  `residual_fee` DECIMAL(18,2) NULL,
+  `calendar_span_days` INT NULL,
+  PRIMARY KEY (`dataset_id`,`visit_type`,`visit_id`),
+  KEY `ix_visit_date` (`dataset_id`,`visit_date`),
+  KEY `ix_visit_department_date` (`dataset_id`,`dept_code`,`visit_date`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
+CREATE TABLE IF NOT EXISTS `dwd_build_audit` (
+  `dataset_id` VARCHAR(128) NOT NULL,
+  `build_run_id` CHAR(36) NOT NULL,
+  `clean_run_id` CHAR(36) NOT NULL,
+  `batch_date` DATE NOT NULL,
+  `requested_start` DATE NULL,
+  `requested_end` DATE NULL,
+  `effective_start` DATE NOT NULL,
+  `effective_end` DATE NOT NULL,
+  `model_version` VARCHAR(64) NOT NULL,
+  `mapping_version` VARCHAR(64) NOT NULL,
+  `privacy_key_id` VARCHAR(64) NOT NULL,
+  `build_scope` VARCHAR(16) NOT NULL,
+  `input_sha256` CHAR(64) NOT NULL,
+  `dim_sha256` CHAR(64) NOT NULL,
+  `visit_sha256` CHAR(64) NULL,
+  `charge_sha256` CHAR(64) NULL,
+  `stats_json` JSON NOT NULL,
+  `updated_at` DATETIME(6) NOT NULL,
+  PRIMARY KEY (`dataset_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
