@@ -89,6 +89,10 @@ def outpatient_preview(
         document = load_preview()
     except (OdsError, ImportError, OSError, ValueError, TypeError, KeyError, AttributeError):
         raise HTTPException(status_code=503, detail="Certified outpatient build unavailable or stale") from None
+    meta = document["meta"]
+    first, last = meta["available_start_date"], meta["available_end_date"]
+    if any(day is not None and not first <= day <= last for day in (start_date, end_date)):
+        raise HTTPException(status_code=422, detail="Dates must be within certified build coverage")
     response.headers["Cache-Control"] = "no-store"
     return summarize_outpatient(document, start_date, end_date, dept_code)
 

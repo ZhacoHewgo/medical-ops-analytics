@@ -44,6 +44,7 @@ export function validateDashboard(data, source = 'csv') {
   require(trend.reduce((sum, row) => sum + row.visits, 0) === visits
     && ranking.reduce((sum, row) => sum + row.visits, 0) === visits)
   if (source === 'preview') {
+    require(filters.start_date >= meta.available_start_date && filters.end_date <= meta.available_end_date)
     require(meta.source === 'dwd_visit_detail' && isDate(meta.batch_date)
       && typeof meta.build_run_id === 'string'
       && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(meta.build_run_id)

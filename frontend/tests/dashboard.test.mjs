@@ -204,3 +204,11 @@ test('preview rejects a fallback CSV response or missing build identity', () => 
   stale.meta.build_run_id = ''
   assert.throws(() => validateDashboard(stale, 'preview'))
 })
+
+test('an empty preview response must still be inside the certified coverage', () => {
+  const empty = previewDashboard()
+  Object.assign(empty, { outpatient_visits: 0, daily_trend: [], department_ranking: [] })
+  assert.equal(validateDashboard(empty, 'preview').outpatient_visits, 0)
+  empty.filters.end_date = '2026-01-03'
+  assert.throws(() => validateDashboard(empty, 'preview'))
+})

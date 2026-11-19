@@ -100,7 +100,7 @@ def rehearsal(monkeypatch, aggregate_path, tmp_path):
     ({"dept_code": "CARD"}, 3),
     ({"start_date": "2026-01-01", "end_date": "2026-01-01"}, 2),
     ({"dept_code": "RESP", "start_date": "2026-01-01", "end_date": "2026-01-01"}, 0),
-    ({"start_date": "2026-03-01", "end_date": "2026-03-02"}, 0),
+    ({"dept_code": "RESP", "start_date": "2026-01-03", "end_date": "2026-01-03"}, 0),
 ])
 def test_preview_against_independent_sql(rehearsal, params, total):
     client, path, trace = rehearsal
@@ -134,6 +134,43 @@ def test_preview_against_independent_sql(rehearsal, params, total):
         "START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY",
     ]
     assert trace[-1] == "ROLLBACK"
+
+
+@pytest.mark.parametrize("params", [
+    {"start_date": "2026-03-01", "end_date": "2026-03-02"},
+    {"start_date": "2026-01-02", "end_date": "2026-01-05"},
+    {"start_date": "2025-12-31", "end_date": "2026-01-02"},
+    {"start_date": "2025-12-31"},
+    {"end_date": "2026-01-04"},
+])
+def test_preview_rejects_dates_outside_certified_coverage(rehearsal, params):
+    client, _, _ = rehearsal
+    response = client.get(URL, params=params)
+    assert response.status_code == response.json()["code"] == 422
+    assert response.json()["data"] is None
+
+
+def test_certified_boundary_can_include_a_day_without_outpatient_rows(rehearsal, monkeypatch):
+    # The certified range can include days without a single outpatient record.
+    monkeypatch.setattr(preview, "read_current_report", lambda *_: {
+        "build_run_id": BUILD, "effective_start": "2026-01-01", "effective_end": "2026-01-04",
+    })
+    response = rehearsal[0].get(URL, params={"start_date": "2026-01-04", "end_date": "2026-01-04"})
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["meta"]["available_end_date"] == "2026-01-04"
+    assert data["outpatient_visits"] == 0
+    assert data["daily_trend"] == data["department_ranking"] == []
+
+
+def test_csv_keeps_its_out_of_range_empty_result(rehearsal):
+    response = rehearsal[0].get("/api/dashboard/overview", params={
+        "start_date": "2026-03-01", "end_date": "2026-03-02",
+    })
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["outpatient_visits"] == 0
+    assert data["daily_trend"] == data["department_ranking"] == []
 
 
 @pytest.mark.parametrize("params", [
@@ -236,7 +273,9 @@ def test_preview_browser_and_local_latency(rehearsal, monkeypatch):
                     assert http.get(URL).status_code == 200
 
                 def request(index):
-                    filters = ({}, {"dept_code": "CARD"}, {"start_date": "2026-03-01", "end_date": "2026-03-01"})[index % 3]
+                    filters = ({}, {"dept_code": "CARD"}, {
+                        "dept_code": "RESP", "start_date": "2026-01-01", "end_date": "2026-01-01",
+                    })[index % 3]
                     started = perf_counter()
                     response = http.get(URL, params=filters)
                     assert response.status_code == 200

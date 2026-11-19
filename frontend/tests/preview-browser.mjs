@@ -48,6 +48,13 @@ try {
   assert.equal(await counts(), 0)
   await page.getByRole('heading', { name: '当前范围暂无有效门诊记录' }).waitFor()
 
+  await page.getByLabel('结束日期').fill('2026-01-05')
+  const rejected = page.waitForResponse(r => r.url().includes('/api/dashboard/outpatient-preview'))
+  await page.getByRole('button', { name: '应用筛选' }).click()
+  assert.equal((await rejected).status(), 422)
+  await page.getByRole('alert').getByText(/HTTP 422/).waitFor()
+  assert.equal(await page.locator('.kpi-value').count(), 0)
+
   // The fixture rejects this request in the API using the same unavailable-source error path.
   await page.request.post(base + '/__rehearsal/source/unavailable')
   await page.getByRole('button', { name: '重置' }).click()
@@ -67,7 +74,7 @@ try {
   assert.equal(await counts(), 4)
   await page.getByRole('heading', { name: '数据质量摘要' }).waitFor()
   assert.deepEqual(errors, [])
-  console.log(JSON.stringify({ all: 4, department: 3, empty: 0, unavailable: 503,
+  console.log(JSON.stringify({ all: 4, department: 3, empty: 0, outOfCoverage: 422, unavailable: 503,
     recovery: 4, mobileWidth: 390, csv: 4, pageErrors: errors.length }))
 } finally {
   await browser.close()
