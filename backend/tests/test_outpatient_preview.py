@@ -45,7 +45,7 @@ def rehearsal(monkeypatch, aggregate_path, tmp_path):
             self.raw = raw
 
         def execute(self, sql, params=()):
-            trace.append(sql)
+            trace.append((sql, params))
             if sql.startswith("SET TRANSACTION"):
                 return
             if sql.startswith("START TRANSACTION"):
@@ -54,7 +54,10 @@ def rehearsal(monkeypatch, aggregate_path, tmp_path):
             self.raw.execute(sql.replace("%s", "?"), params)
 
         def fetchall(self):
-            return [(date.fromisoformat(day), dept, n) for day, dept, n in self.raw.fetchall()]
+            rows = self.raw.fetchall()
+            if self.raw.description[0][0] == "visit_date":
+                return [(date.fromisoformat(day), dept, n) for day, dept, n in rows]
+            return rows
 
     class Connection:
         def __init__(self):
@@ -69,7 +72,7 @@ def rehearsal(monkeypatch, aggregate_path, tmp_path):
                 raw.close()
 
         def rollback(self):
-            trace.append("ROLLBACK")
+            trace.append(("ROLLBACK", ()))
             self.db.rollback()
 
         def close(self):
@@ -130,10 +133,29 @@ def test_preview_against_independent_sql(rehearsal, params, total):
         dept: sum(current == dept for _, current in rows) for dept in {dept for _, dept in rows}
     }
     assert trace[:2] == [
-        "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ",
-        "START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY",
+        ("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ", ()),
+        ("START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY", ()),
     ]
-    assert trace[-1] == "ROLLBACK"
+    assert trace[-1] == ("ROLLBACK", ())
+
+
+@pytest.mark.parametrize("department,total", [(None, 2), ("CARD", 2), ("RESP", 0)])
+def test_preview_binds_requested_dates_and_department(rehearsal, department, total):
+    client, _, trace = rehearsal
+    params = {"start_date": "2026-01-01", "end_date": "2026-01-01"}
+    if department is not None:
+        params["dept_code"] = department
+    response = client.get(URL, params=params)
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["outpatient_visits"] == total
+    assert data["meta"]["department_codes"] == ["CARD", "RESP"]
+    (sql, bound), = [(sql, bound) for sql, bound in trace if sql.startswith("SELECT visit_date")]
+    expected = ("COURSE_TEST", "OUTPATIENT", "2026-01-01", "2026-01-01")
+    if department is not None:
+        expected += (department,)
+    assert ("AND dept_code = %s" in sql) == (department is not None)
+    assert bound == expected
 
 
 @pytest.mark.parametrize("params", [
@@ -144,10 +166,11 @@ def test_preview_against_independent_sql(rehearsal, params, total):
     {"end_date": "2026-01-04"},
 ])
 def test_preview_rejects_dates_outside_certified_coverage(rehearsal, params):
-    client, _, _ = rehearsal
+    client, _, trace = rehearsal
     response = client.get(URL, params=params)
     assert response.status_code == response.json()["code"] == 422
     assert response.json()["data"] is None
+    assert not any(sql.startswith("SELECT visit_date") for sql, _ in trace)
 
 
 def test_certified_boundary_can_include_a_day_without_outpatient_rows(rehearsal, monkeypatch):
@@ -207,7 +230,7 @@ def test_stale_build_rejected_before_fetching_counts(rehearsal, monkeypatch):
         "build_run_id": "expired", "dataset_id": "COURSE_TEST", "batch_date": BATCH, "gate_status": "PASS",
     })
     assert client.get(URL).status_code == 503
-    assert not any(sql.startswith("SELECT") for sql in trace)
+    assert not any(sql.startswith("SELECT") for sql, _ in trace)
 
 
 def test_report_replaced_during_read_returns_503(rehearsal, monkeypatch):
@@ -216,7 +239,7 @@ def test_report_replaced_during_read_returns_503(rehearsal, monkeypatch):
                     {"build_run_id": "changed"}])
     monkeypatch.setattr(preview, "read_current_report", lambda *_: next(reports))
     assert client.get(URL).status_code == 503
-    assert trace[-1] == "ROLLBACK"
+    assert trace[-1] == ("ROLLBACK", ())
 
 
 def test_preview_rejects_non_loopback(rehearsal):

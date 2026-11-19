@@ -15,21 +15,24 @@ def read_current_report(build, environment, batch):
         os.close(directory)
 
 
-def read_counts(cursor, dataset, start, end):
-    cursor.execute(
+def read_counts(cursor, dataset, start, end, dept_code):
+    sql = (
         "SELECT visit_date, dept_code, COUNT(*) "
         "FROM dwd_visit_detail WHERE dataset_id = %s AND visit_type = %s "
-        "AND visit_date BETWEEN %s AND %s "
-        "GROUP BY visit_date, dept_code ORDER BY visit_date, dept_code",
-        (dataset, "OUTPATIENT", start, end),
+        "AND visit_date BETWEEN %s AND %s"
     )
+    params = (dataset, "OUTPATIENT", start, end)
+    if dept_code is not None:
+        sql += " AND dept_code = %s"
+        params += (dept_code,)
+    cursor.execute(sql + " GROUP BY visit_date, dept_code ORDER BY visit_date, dept_code", params)
     return [
         {"date": day.isoformat(), "dept_code": department, "visits": count}
         for day, department, count in cursor.fetchall()
     ]
 
 
-def load_preview():
+def load_preview(*, start_date=None, end_date=None, dept_code=None):
     """Returns aggregates only. No default data or partially certified builds."""
     if os.environ.get("OUTPATIENT_PREVIEW_ENABLED") != "1":
         raise OdsError("OUTPATIENT_PREVIEW_DISABLED")
@@ -66,7 +69,18 @@ def load_preview():
                 or identity["gate_status"] != "PASS"
             ):
                 raise OdsError("OUTPATIENT_PREVIEW_STALE")
-            counts = read_counts(cursor, dataset, report["effective_start"], report["effective_end"])
+            first, last = report["effective_start"], report["effective_end"]
+            cursor.execute(
+                "SELECT DISTINCT dept_code FROM dwd_visit_detail "
+                "WHERE dataset_id = %s AND visit_type = %s AND visit_date BETWEEN %s AND %s",
+                (dataset, "OUTPATIENT", first, last),
+            )
+            departments = sorted(row[0] for row in cursor.fetchall())
+            start = first if start_date is None else start_date
+            end = last if end_date is None else end_date
+            counts = []
+            if first <= start <= end <= last and (dept_code is None or dept_code in departments):
+                counts = read_counts(cursor, dataset, start, end, dept_code)
         # Reject a certificate replaced while the snapshot was being read.
         if read_current_report(build, environment, batch) != report:
             raise OdsError("OUTPATIENT_PREVIEW_STALE")
@@ -90,7 +104,7 @@ def load_preview():
             "build_run_id": run_id,
             "available_start_date": report["effective_start"],
             "available_end_date": report["effective_end"],
-            "department_codes": sorted({row["dept_code"] for row in counts}),
+            "department_codes": departments,
         },
         "counts": counts,
     }

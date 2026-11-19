@@ -86,7 +86,7 @@ def outpatient_preview(
     if dept_code is not None and (not dept_code.strip() or len(dept_code) > 64):
         raise HTTPException(status_code=422, detail="Invalid dept_code")
     try:
-        document = load_preview()
+        document = load_preview(start_date=start_date, end_date=end_date, dept_code=dept_code)
     except (OdsError, ImportError, OSError, ValueError, TypeError, KeyError, AttributeError):
         raise HTTPException(status_code=503, detail="Certified outpatient build unavailable or stale") from None
     meta = document["meta"]
