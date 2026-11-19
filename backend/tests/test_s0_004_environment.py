@@ -15,7 +15,7 @@ def test_placeholder_imports_preserve_health_and_routes(monkeypatch, tmp_path):
 
     application = create_app()
     assert {route.path for route in application.routes} == {
-        "/health", "/api/dashboard/overview",
+        "/health", "/api/dashboard/overview", "/api/dashboard/outpatient-preview",
     }
     with TestClient(application) as client:
         response = client.get("/health")
