@@ -36,6 +36,42 @@ def load_preview(*, start_date=None, end_date=None, dept_code=None):
     """Returns aggregates only. No default data or partially certified builds."""
     if os.environ.get("OUTPATIENT_PREVIEW_ENABLED") != "1":
         raise OdsError("OUTPATIENT_PREVIEW_DISABLED")
+    return _load_outpatient(start_date, end_date, dept_code, source="dwd_visit_detail")
+
+
+def _read_ads_counts(cursor, dataset, batch, run_id, start, end, dept_code):
+    expected = read_counts(cursor, dataset, start, end, dept_code)
+    where = " WHERE dataset_id=%s AND batch_date=%s AND source_build_run_id=%s AND stat_date BETWEEN %s AND %s"
+    params = (dataset, batch, run_id, start, end)
+    if dept_code is not None:
+        where += " AND dept_code=%s"
+        params += (dept_code,)
+    cursor.execute(
+        "SELECT 'ads',stat_date,dept_code,outpatient_visits FROM ads_outpatient_theme" + where
+        + " UNION ALL SELECT 'dws',stat_date,dept_code,"
+        "CASE WHEN ads_status='PASS' THEN outpatient_visits END FROM dws_dept_daily" + where,
+        params + params,
+    )
+    # Keep keys from both publications so an unpaired row cannot disappear into an empty result.
+    published = {"ads": {}, "dws": {}}
+    for layer, day, dept, count in cursor.fetchall():
+        published[layer][(day.isoformat(), dept)] = count
+    truth = {(row["date"], row["dept_code"]): row["visits"] for row in expected}
+    if published["ads"] != truth or published["dws"] != truth:
+        raise OdsError("OUTPATIENT_ADS_INCOMPLETE")
+    return expected
+
+
+def load_ads(*, start_date=None, end_date=None, dept_code=None, allowed_department=None):
+    if allowed_department is not None:
+        if dept_code is not None and dept_code != allowed_department:
+            raise OdsError("OUTPATIENT_ADS_SCOPE_INVALID")
+        dept_code = allowed_department
+    return _load_outpatient(start_date, end_date, dept_code, source="ads_outpatient_theme",
+                            allowed_department=allowed_department)
+
+
+def _load_outpatient(start_date, end_date, dept_code, *, source, allowed_department=None):
     from pymysql import MySQLError
 
     from etl.jobs import build_dwd as build
@@ -70,17 +106,27 @@ def load_preview(*, start_date=None, end_date=None, dept_code=None):
             ):
                 raise OdsError("OUTPATIENT_PREVIEW_STALE")
             first, last = report["effective_start"], report["effective_end"]
-            cursor.execute(
-                "SELECT DISTINCT dept_code FROM dwd_visit_detail "
-                "WHERE dataset_id = %s AND visit_type = %s AND visit_date BETWEEN %s AND %s",
-                (dataset, "OUTPATIENT", first, last),
-            )
+            if source == "ads_outpatient_theme":
+                sql = "SELECT dept_code FROM dim_department WHERE dataset_id = %s"
+                if allowed_department is None:
+                    cursor.execute(sql, (dataset,))
+                else:
+                    cursor.execute(sql + " AND dept_code = %s", (dataset, allowed_department))
+            else:
+                cursor.execute(
+                    "SELECT DISTINCT dept_code FROM dwd_visit_detail "
+                    "WHERE dataset_id = %s AND visit_type = %s AND visit_date BETWEEN %s AND %s",
+                    (dataset, "OUTPATIENT", first, last),
+                )
             departments = sorted(row[0] for row in cursor.fetchall())
             start = first if start_date is None else start_date
             end = last if end_date is None else end_date
             counts = []
             if first <= start <= end <= last and (dept_code is None or dept_code in departments):
-                counts = read_counts(cursor, dataset, start, end, dept_code)
+                if source == "ads_outpatient_theme":
+                    counts = _read_ads_counts(cursor, dataset, batch, run_id, start, end, dept_code)
+                else:
+                    counts = read_counts(cursor, dataset, start, end, dept_code)
         # Reject a certificate replaced while the snapshot was being read.
         if read_current_report(build, environment, batch) != report:
             raise OdsError("OUTPATIENT_PREVIEW_STALE")
@@ -99,7 +145,7 @@ def load_preview(*, start_date=None, end_date=None, dept_code=None):
 
     return {
         "meta": {
-            "source": "dwd_visit_detail",
+            "source": source,
             "batch_date": batch,
             "build_run_id": run_id,
             "available_start_date": report["effective_start"],
