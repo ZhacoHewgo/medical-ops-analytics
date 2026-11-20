@@ -17,10 +17,24 @@ from etl.config.source_config import OdsError, database_cursor
 
 router = APIRouter(prefix="/api/v1", tags=["门诊集市"])
 XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+class ErrorResponse(BaseModel):
+    code: int
+    msg: str
+    data: None
+
+
 ERRORS = {
-    401: {"description": "登录缺失、过期或失效"},
+    401: {
+        "description": "登录缺失、过期或失效。"
+        '示例 `{"code":401,"msg":"Authentication required","data":null}`',
+        "model": ErrorResponse,
+    },
     403: {"description": "科室范围越权"},
-    422: {"description": "日期、维度、指标或粒度无效"},
+    422: {
+        "description": "日期、维度、指标或粒度无效。"
+        '示例 `{"code":422,"msg":"Invalid query parameters","data":null}`',
+        "model": ErrorResponse,
+    },
     503: {"description": "认证集市或审计不可用"},
 }
 

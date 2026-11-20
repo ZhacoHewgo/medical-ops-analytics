@@ -1,4 +1,5 @@
 import csv
+import json
 from io import BytesIO
 from pathlib import Path
 import subprocess
@@ -26,13 +27,25 @@ OTHER = "SIM_DEPT_02"
 def test_protected_ads_requires_auth_and_documents_routes(monkeypatch):
     monkeypatch.setenv("AUTH_ENABLED", "1")
     with TestClient(create_app()) as client:
-        assert client.get(SUMMARY).status_code == 401
-        assert client.post(EXPORT, json={}).status_code == 401
+        summary_denied = client.get(SUMMARY)
+        export_denied = client.post(EXPORT, json={})
         api = client.get("/openapi.json")
         assert api.status_code == 200
-        endpoint = api.json()["paths"][SUMMARY]["get"]
-        assert endpoint["security"] and {"200", "401", "403", "422", "503"} <= endpoint["responses"].keys()
-        assert EXPORT in api.json()["paths"]
+        contract = api.json()
+        paths = contract["paths"]
+        for endpoint, denied in ((paths[SUMMARY]["get"], summary_denied), (paths[EXPORT]["post"], export_denied)):
+            assert denied.status_code == 401
+            errors = endpoint["responses"]
+            assert endpoint["security"] and {"200", "401", "403", "422", "503"} <= errors.keys()
+            for code in ("401", "422"):
+                ref = errors[code]["content"]["application/json"]["schema"]["$ref"].rsplit("/", 1)[-1]
+                error_schema = contract["components"]["schemas"][ref]
+                assert set(error_schema["required"]) == {"code", "msg", "data"}
+                assert error_schema["properties"]["data"]["type"] == "null"
+            assert json.loads(errors["401"]["description"].split("`")[1]) == denied.json()
+            assert json.loads(errors["422"]["description"].split("`")[1]) == {
+                "code": 422, "msg": "Invalid query parameters", "data": None,
+            }
 
 
 def test_scoped_service_cannot_widen_a_department(monkeypatch):
@@ -131,7 +144,10 @@ def test_mysql_ads_summary_export_and_scope(mysql_pipeline, auth_client, monkeyp
         assert summary(department, dept_code=f"{DEPT},{OTHER}").status_code == 403
         assert export(department, dept_code=OTHER).status_code == 403
         assert summary(analyst, end_date="2025-01-05").status_code == 422
-        assert summary(analyst, granularity="month").status_code == 422
+        invalid_grain = summary(analyst, granularity="month")
+        assert invalid_grain.status_code == 422
+        example = client.get("/openapi.json").json()["paths"][SUMMARY]["get"]["responses"]["422"]
+        assert invalid_grain.json() == json.loads(example["description"].split("`")[1])
         assert summary(analyst, start_date="2025-02-30").status_code == 422
         assert summary(analyst, drill="patient_id").status_code == 422
         assert summary(analyst, dept_code="UNKNOWN").status_code == 422
