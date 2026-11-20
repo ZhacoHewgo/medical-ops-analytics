@@ -1,4 +1,4 @@
-"""Authorized outpatient summary and Excel export from a certified publication."""
+"""Authorized outpatient summary and export from a certified publication."""
 from io import BytesIO
 from typing import Annotated, Literal
 from uuid import UUID
@@ -7,17 +7,22 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from openpyxl import Workbook
 from openpyxl.cell import WriteOnlyCell
 from pydantic import BaseModel, ConfigDict, Field
+from reportlab.pdfbase.pdfdoc import PDFError
+from reportlab.platypus import LayoutError
 
 from app.core.auth_store import Account, DB_DOWN, read_user
 from app.core.deps import apply_data_scope, get_current_user
 from app.core.security import unauthorized
 from app.outpatient_response import check_dates, summarize_outpatient
 from app.outpatient_preview import load_ads
+from app.report_pdf import render_pdf
 from etl.config.source_config import OdsError, database_cursor
 
 
 router = APIRouter(prefix="/api/v1", tags=["门诊集市"])
 XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+PDF = "application/pdf"
+BINARY = {"schema": {"type": "string", "format": "binary"}}
 ERRORS = {
     401: {"description": "登录缺失、过期或失效"},
     403: {"description": "科室范围越权"},
@@ -42,8 +47,8 @@ class ReportQuery(OutpatientQuery):
     group_by: ReportGroup = "day_department"
 
 
-class ExcelRequest(ReportQuery):
-    format: Literal["xlsx"] = "xlsx"
+class ExportRequest(ReportQuery):
+    format: Literal["xlsx", "pdf"] = "xlsx"
     expected_build_run_id: UUID | None = None
 
 
@@ -149,53 +154,69 @@ def _report_rows(document, group_by):
             for (day, department), value in sorted(counts.items())]
 
 
-def _excel(document, summary, group_by="day_department", *, expected_build_run_id=None):
+def _export(document, summary, group_by="day_department", *, format="xlsx", expected_build_run_id=None):
     meta = document["meta"]
     if expected_build_run_id is not None and str(expected_build_run_id) != meta["build_run_id"]:
         raise HTTPException(409, "Publication changed; refresh the report before exporting")
     rows = _report_rows(document, group_by)
-    workbook = Workbook(write_only=True)
-    sheet = workbook.create_sheet("门诊人次")
     headings = {
         "day": ("日期", "门诊人次"),
         "department": ("科室", "门诊人次"),
         "day_department": ("日期", "科室", "门诊人次"),
         "month_department": ("月份", "科室", "门诊人次"),
-    }
-    sheet.append(headings[group_by])
-    for row in rows:
-        cells = []
-        if row["date"] is not None:
-            cells.append(row["date"])
-        if row["dept_code"] is not None:
-            department = WriteOnlyCell(sheet, value=row["dept_code"])
-            department.data_type = "s"
-            cells.append(department)
-        cells.append(row["visits"])
-        sheet.append(cells)
-    source = workbook.create_sheet("数据来源")
+    }[group_by]
+    cells = [
+        tuple(value for value in (row["date"], row["dept_code"], row["visits"]) if value is not None)
+        for row in rows
+    ]
     filters = summary["data"]["filters"]
-    for label, value in (
+    metadata = (
         ("来源表", meta["source"]), ("批次", meta["batch_date"]), ("构建号", meta["build_run_id"]),
         ("起始日期", filters["start_date"]), ("结束日期", filters["end_date"]),
         ("科室范围", filters["dept_code"] or "全院"),
-    ):
+    )
+    if format == "pdf":
+        try:
+            content = render_pdf(headings, cells, metadata, summary["data"]["outpatient_visits"])
+        except (OSError, ValueError, PDFError, LayoutError):
+            raise HTTPException(503, "Report PDF unavailable") from None
+        media_type = PDF
+    else:
+        content = _excel(headings, cells, metadata)
+        media_type = XLSX
+    return Response(content, media_type=media_type, headers={
+        "Cache-Control": "no-store", "Content-Disposition": f'attachment; filename="outpatient.{format}"',
+    })
+
+
+def _excel(headings, rows, metadata):
+    workbook = Workbook(write_only=True)
+    sheet = workbook.create_sheet("门诊人次")
+    sheet.append(headings)
+    for row in rows:
+        cells = []
+        for value in row[:-1]:
+            cell = WriteOnlyCell(sheet, value=value)
+            cell.data_type = "s"
+            cells.append(cell)
+        sheet.append([*cells, row[-1]])
+    source = workbook.create_sheet("数据来源")
+    for label, value in metadata:
         cell = WriteOnlyCell(source, value=value)
         cell.data_type = "s"
         source.append((label, cell))
     stream = BytesIO()
     workbook.save(stream)
     workbook.close()
-    return Response(stream.getvalue(), media_type=XLSX, headers={
-        "Cache-Control": "no-store", "Content-Disposition": 'attachment; filename="outpatient.xlsx"',
-    })
+    return stream.getvalue()
 
 
 def _serve(query, user, action, *, grouped=False):
     try:
         scope, document, summary = _certified_data(query, user)
         if action == "export":
-            result = _excel(document, summary, query.group_by, expected_build_run_id=query.expected_build_run_id)
+            result = _export(document, summary, query.group_by, format=query.format,
+                             expected_build_run_id=query.expected_build_run_id)
         else:
             if grouped:
                 summary["data"].update(group_by=query.group_by, rows=_report_rows(document, query.group_by))
@@ -225,8 +246,8 @@ def outpatient_report(query: Annotated[ReportQuery, Query()], response: Response
     return result
 
 
-@router.post("/reports/export", response_class=Response, summary="导出已授权门诊聚合 Excel",
+@router.post("/reports/export", response_class=Response, summary="导出已授权门诊聚合 Excel 或 PDF",
              responses={**ERRORS, 409: {"description": "数据发布批次已变化，请重新查询"},
-                        200: {"content": {XLSX: {"schema": {"type": "string", "format": "binary"}}}}})
-def export_outpatient(query: ExcelRequest, user: Annotated[Account, Depends(get_current_user)]):
+                        200: {"content": {XLSX: BINARY, PDF: BINARY}}})
+def export_outpatient(query: ExportRequest, user: Annotated[Account, Depends(get_current_user)]):
     return _serve(query, user, "export")

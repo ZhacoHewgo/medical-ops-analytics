@@ -36,7 +36,11 @@ def test_protected_ads_requires_auth_and_documents_routes(monkeypatch):
         assert api.status_code == 200
         endpoint = api.json()["paths"][SUMMARY]["get"]
         assert endpoint["security"] and {"200", "401", "403", "422", "503"} <= endpoint["responses"].keys()
-        assert EXPORT in api.json()["paths"]
+        export_endpoint = api.json()["paths"][EXPORT]["post"]
+        assert export_endpoint["security"]
+        assert set(export_endpoint["responses"]["200"]["content"]) == {
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/pdf",
+        }
         assert api.json()["paths"][REPORT]["get"]["security"]
 
 
@@ -56,13 +60,13 @@ def test_scoped_service_cannot_widen_a_department(monkeypatch):
 def test_excel_exports_text_cells_and_rejects_rows_over_limit():
     from fastapi import HTTPException
 
-    from app.api.routers.outpatient_router import _excel
+    from app.api.routers.outpatient_router import _export
 
     row = {"date": DAY, "dept_code": "=1+1", "visits": 1}
     document = {"counts": [row], "meta": {"source": "ads_outpatient_theme",
                 "batch_date": DAY, "build_run_id": "isolated-demo"}}
     summary = {"data": {"filters": {"start_date": DAY, "end_date": DAY, "dept_code": "=1+1"}}}
-    result = _excel(document, summary)
+    result = _export(document, summary)
     workbook = load_workbook(BytesIO(result.body), read_only=True)
     try:
         cell = list(workbook["门诊人次"].iter_rows())[1][1]
@@ -72,7 +76,7 @@ def test_excel_exports_text_cells_and_rejects_rows_over_limit():
     finally:
         workbook.close()
     with pytest.raises(HTTPException) as error:
-        _excel({**document, "counts": [dict(row, dept_code=str(index)) for index in range(10001)]}, summary)
+        _export({**document, "counts": [dict(row, dept_code=str(index)) for index in range(10001)]}, summary)
     assert error.value.status_code == 422
 
 
@@ -138,6 +142,8 @@ def test_mysql_ads_summary_export_and_scope(mysql_pipeline, auth_client, monkeyp
         assert summary(department, dept_code=OTHER).status_code == 403
         assert summary(department, dept_code=f"{DEPT},{OTHER}").status_code == 403
         assert export(department, dept_code=OTHER).status_code == 403
+        assert export(department, format="pdf", dept_code=OTHER).status_code == 403
+        assert export(department, format="pdf", end_date="2025-01-05").status_code == 422
         assert summary(analyst, end_date="2025-01-05").status_code == 422
         assert summary(analyst, granularity="month").status_code == 422
         assert summary(analyst, start_date="2025-02-30").status_code == 422
@@ -145,6 +151,7 @@ def test_mysql_ads_summary_export_and_scope(mysql_pipeline, auth_client, monkeyp
         assert summary(analyst, dept_code="UNKNOWN").status_code == 422
         assert summary(analyst).status_code == 503
         assert export(analyst).status_code == 503
+        assert export(analyst, format="pdf").status_code == 503
 
         marts.rerun((DAY, LAST), **args)
         all_records = summary(analyst)
@@ -204,10 +211,20 @@ def test_mysql_ads_summary_export_and_scope(mysql_pipeline, auth_client, monkeyp
                 ]
             finally:
                 book.close()
+            pdf = export(analyst, format="pdf", group_by=group_by, expected_build_run_id=original)
+            assert pdf.status_code == 200 and pdf.content.startswith(b"%PDF-")
         assert grouped(department, group_by="month_department").json()["data"]["rows"] == [
             {"date": "2025-01", "dept_code": DEPT, "visits": 3}
         ]
         assert export(department, expected_build_run_id="ffffffff-ffff-4fff-bfff-ffffffffffff").status_code == 409
+        assert export(department, format="pdf",
+                      expected_build_run_id="ffffffff-ffff-4fff-bfff-ffffffffffff").status_code == 409
+        for params in ({}, {"start_date": LAST, "end_date": LAST}):
+            pdf = export(department, format="pdf", expected_build_run_id=original, **params)
+            assert pdf.status_code == 200 and pdf.content.startswith(b"%PDF-")
+            assert pdf.headers["Content-Type"] == "application/pdf"
+            assert pdf.headers["Cache-Control"] == "no-store"
+            assert pdf.headers["Content-Disposition"] == 'attachment; filename="outpatient.pdf"'
         file = export(department)
         assert file.status_code == 200 and file.headers["Cache-Control"] == "no-store"
         assert file.headers["Content-Type"].endswith("spreadsheetml.sheet")

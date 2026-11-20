@@ -87,17 +87,18 @@ export function drillSelection(filters, row) {
   return { ...range, dept_code: row.dept_code || filters.dept_code }
 }
 
-export async function readWorkbook(request, data, signal) {
-  const type = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+export async function readReportExport(request, data, format, signal) {
+  const type = format === 'pdf' ? 'application/pdf'
+    : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
   const response = await request('/api/v1/reports/export', {
     method: 'POST', signal, headers: { 'Content-Type': 'application/json', Accept: type },
     body: JSON.stringify({
-      ...data.filters, group_by: data.group_by, format: 'xlsx', expected_build_run_id: data.meta.build_run_id,
+      ...data.filters, group_by: data.group_by, format, expected_build_run_id: data.meta.build_run_id,
     }),
   })
   if (!response.ok) throw new ReportError(response.status)
   if (response.headers.get('content-type') !== type) throw new ReportError()
-  const workbook = await response.blob()
-  if (!workbook.size) throw new ReportError()
-  return workbook
+  const file = await response.blob()
+  if (!file.size) throw new ReportError()
+  return file
 }

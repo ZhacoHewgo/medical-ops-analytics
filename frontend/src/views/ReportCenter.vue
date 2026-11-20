@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch 
 import { useRouter } from 'vue-router'
 import DashboardChart from '../components/DashboardChart.vue'
 import { useSession } from '../api/session.mjs'
-import { comparisonRange, drillSelection, readReport, readWorkbook, reportGroups, ReportError } from '../api/report.mjs'
+import { comparisonRange, drillSelection, readReport, readReportExport, reportGroups, ReportError } from '../api/report.mjs'
 
 const router = useRouter()
 const session = useSession()
@@ -115,19 +115,19 @@ watch([current, mode], async ([data, method], _, onCleanup) => {
   }
 })
 
-async function download() {
+async function download(format) {
   const data = current.value
   if (!data || exporting.value) return
   exporting.value = true
   exportError.value = ''
   const controller = pendingExport = new AbortController()
   try {
-    const workbook = await readWorkbook(request, data, requestSignal(controller))
+    const file = await readReportExport(request, data, format, requestSignal(controller))
     if (controller.signal.aborted || current.value !== data) return
-    const url = URL.createObjectURL(workbook)
+    const url = URL.createObjectURL(file)
     const anchor = document.createElement('a')
     anchor.href = url
-    anchor.download = '门诊人次.xlsx'
+    anchor.download = `门诊人次.${format}`
     anchor.click()
     setTimeout(() => URL.revokeObjectURL(url), 1000)
   } catch (cause) {
@@ -189,7 +189,8 @@ onBeforeUnmount(() => { pending?.abort(); pendingExport?.abort() })
           </div>
           <div class="filter-actions">
             <button v-if="trail.length" class="button secondary" type="button" @click="back">返回上一级</button>
-            <button class="button primary" type="button" :disabled="exporting" @click="download">导出 Excel</button>
+            <button class="button primary" type="button" :disabled="exporting" @click="download('xlsx')">导出 Excel</button>
+            <button class="button secondary" type="button" :disabled="exporting" @click="download('pdf')">导出 PDF</button>
           </div>
         </div>
         <p v-if="exportError" class="report-error" role="alert">{{ exportError }}</p>

@@ -1,6 +1,7 @@
 // Executed by the opt-in browser check in test_outpatient_ads_api.py.
 /* global document, innerWidth */
 import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
@@ -142,6 +143,16 @@ try {
     const download = await wait
     assert.equal(download.suggestedFilename(), '门诊人次.xlsx')
     await download.saveAs(join(output, 'report.xlsx'))
+
+    const waitForPdf = page.waitForEvent('download')
+    const pdfResponse = await read(() => page.getByRole('button', { name: '导出 PDF' }).click(), exportRoute)
+    assert.deepEqual(pdfResponse.request().postDataJSON(), { ...body, format: 'pdf' })
+    assert.equal(pdfResponse.headers()['content-type'], 'application/pdf')
+    const pdf = await waitForPdf
+    assert.equal(pdf.suggestedFilename(), '门诊人次.pdf')
+    const pdfPath = join(output, 'report.pdf')
+    await pdf.saveAs(pdfPath)
+    assert.equal((await readFile(pdfPath)).subarray(0, 5).toString(), '%PDF-')
     console.log('REPORT_BROWSER_OK groups=4 hospital=4 department=3 empty=0 status=403,409 offline=1')
   }
   assert.deepEqual(errors, [])
