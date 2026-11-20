@@ -161,3 +161,9 @@ tbody th { max-width: 160px; }
 .ops-feedback { margin: 12px 0; flex-wrap: wrap; align-items: center; }
 .ops-heading { flex-wrap: wrap; }
 .ops-heading .filter-actions { flex-wrap: wrap; }
+
+.registry-form { grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr) auto; margin-top: 12px; }
+.registry-batches { padding-left: 24px; overflow-wrap: anywhere; }
+@media (max-width: 640px) {
+  .registry-form { grid-template-columns: minmax(0, 1fr); }
+}

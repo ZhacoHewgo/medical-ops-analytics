@@ -1,5 +1,6 @@
 """Safe registry and scheduler metadata for the platform operations pages."""
 from datetime import datetime, timedelta, timezone
+from hashlib import sha256
 import json
 import os
 import re
@@ -36,6 +37,82 @@ def read_sources():
                     item["last_check"] = {"outcome": status, "at": when.replace(tzinfo=timezone.utc).isoformat()}
             entries.append(item)
     return entries
+
+
+def _registry_rows(cursor, *, lock=False):
+    suffix = " FOR UPDATE" if lock else ""
+    cursor.execute(
+        "SELECT name,kind,file_path,dataset_id,etl_batch_date FROM source_config ORDER BY name" + suffix,
+    )
+    return [(*row[:4], row[4].isoformat()) for row in cursor.fetchall()]
+
+
+def _registry_version(rows):
+    return sha256(json.dumps(sorted(rows), separators=(",", ":"), ensure_ascii=True).encode()).hexdigest()
+
+
+def registration_state():
+    with sources.database_cursor(DB_ERROR) as cursor:
+        rows = _registry_rows(cursor)
+    counts = {}
+    for _, _, _, dataset, batch in rows:
+        key = dataset, batch
+        counts[key] = counts.get(key, 0) + 1
+    batches = [{"dataset_id": dataset, "batch_date": batch, "sources": count}
+               for (dataset, batch), count in sorted(counts.items())]
+    return {"version": _registry_version(rows), "batches": batches}
+
+
+def _target_registrations(dataset, batch):
+    registrations = []
+    for name, spec in sources.SOURCES.items():
+        candidate = {"kind": "csv", "dataset_id": dataset, "etl_batch_date": batch,
+                     "file_path": str(sources.GENERATED_ROOT / dataset / spec["path"])}
+        info = sources.validate_source(name, candidate)
+        sources.read_source(name, info)
+        registrations.append((name, *(info[field] for field in sources.CONFIG_FIELDS)))
+    return sorted(registrations)
+
+
+def _record_registry_change(cursor, actor, previous, version, dataset, batch):
+    baseline = [{"name": name, "dataset_id": old_dataset, "batch_date": old_batch}
+                for name, _, _, old_dataset, old_batch in previous]
+    cursor.execute(
+        "INSERT INTO source_registry_audit "
+        "(actor_id,previous_version,new_version,previous_sources,dataset_id,batch_date) "
+        "VALUES (%s,%s,%s,%s,%s,%s)",
+        (actor.user_id, _registry_version(previous), version, json.dumps(baseline), dataset, batch),
+    )
+
+
+def switch_registration(actor, dataset, batch, expected_version, current_admin):
+    with scheduler._lock(environment(), "run"):
+        if registration_state()["version"] != expected_version:
+            return "STALE", None
+        try:
+            desired = _target_registrations(dataset, batch)
+        except sources.OdsError:
+            return "FILE_CHECK_FAILED", None
+        with sources.database_cursor(DB_ERROR, write=True) as cursor:
+            if not current_admin(cursor, actor, lock=True):
+                return "UNAUTHORIZED", None
+            previous = _registry_rows(cursor, lock=True)
+            if _registry_version(previous) != expected_version or any(row[0] not in sources.SOURCES for row in previous):
+                return "STALE", None
+            if desired == previous:
+                return "UNCHANGED", expected_version
+            for row in desired:
+                cursor.execute(
+                    "INSERT INTO source_config (name,kind,file_path,dataset_id,etl_batch_date) VALUES (%s,%s,%s,%s,%s) "
+                    "ON DUPLICATE KEY UPDATE kind=%s,file_path=%s,dataset_id=%s,etl_batch_date=%s",
+                    (*row, *row[1:]),
+                )
+            current = _registry_rows(cursor, lock=True)
+            if current != desired:
+                raise sources.OdsError(DB_ERROR)
+            version = _registry_version(current)
+            _record_registry_change(cursor, actor, previous, version, dataset, batch)
+            return "CHANGED", version
 
 
 def begin_action(actor, action, target, info, current_admin):
