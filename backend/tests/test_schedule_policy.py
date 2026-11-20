@@ -2,6 +2,8 @@ import csv
 from datetime import datetime, timedelta
 import os
 from pathlib import Path
+import subprocess
+import sys
 from threading import Event, Thread
 from time import monotonic, sleep
 
@@ -40,6 +42,53 @@ def wait_for(predicate):
             return value
         sleep(0.02)
     raise AssertionError("Live foreground scheduler did not refresh")
+
+
+def test_shutdown_drains_refresh_before_locking_jobstore(tmp_path):
+    # A child process bounds the test even if the scheduler threads deadlock.
+    script = """
+import sys
+from datetime import datetime, timedelta
+from pathlib import Path
+from threading import Event, Thread
+
+from etl.scheduler import scheduler
+
+scheduler.LOG_ROOT = Path(sys.argv[1])
+scheduler._environment = lambda env: None
+controller = scheduler._LockedScheduler("test", timezone=scheduler.SHANGHAI)
+entered, draining, release = Event(), Event(), Event()
+
+def refresh():
+    entered.set()
+    assert release.wait(3)
+    controller.get_job("ods_schedule_sync")
+
+def observe_drain():
+    draining.set()
+    drain()
+
+drain = controller._owned_executor.drain
+controller._owned_executor.drain = observe_drain
+controller.add_job(refresh, "date", id="ods_schedule_sync",
+                   run_date=datetime.now(scheduler.SHANGHAI) + timedelta(milliseconds=50))
+running = Thread(target=controller.start, daemon=True)
+running.start()
+assert entered.wait(3)
+stopping = Thread(target=controller.shutdown, daemon=True)
+stopping.start()
+assert draining.wait(3)
+release.set()
+stopping.join(2)
+running.join(2)
+assert not stopping.is_alive() and not running.is_alive()
+"""
+    backend = Path(__file__).resolve().parents[1]
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(tmp_path / "logs")],
+        cwd=backend, capture_output=True, timeout=8, check=False,
+    )
+    assert result.returncode == 0, "Foreground scheduler did not drain the active refresh"
 
 
 def test_mysql_live_schedule_refresh_dispatch_and_audit(mysql_pipeline, auth_client, monkeypatch, tmp_path):

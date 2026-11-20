@@ -372,7 +372,10 @@ class _SafeExecutor(BaseExecutor):
             raise EtlError("ETL_INTERRUPTED")
 
     def shutdown(self, wait=True):
-        self.drain()
+        if wait:
+            self.drain()
+        else:
+            self.close_gate()
 
 
 class _LockedScheduler(BlockingScheduler):
@@ -391,7 +394,8 @@ class _LockedScheduler(BlockingScheduler):
                         # Drain the dispatch pass before STOPPED changes remove_job's lookup behavior.
                         with self._jobstores_lock:
                             self.pause()
-                        super().shutdown(wait=True)
+                        # APScheduler holds its job-store lock here. Drain callbacks in finally.
+                        super().shutdown(wait=False)
             finally:
                 # Also drain if STOPPED or interrupted while acquiring the cleanup guard/gate.
                 try:
