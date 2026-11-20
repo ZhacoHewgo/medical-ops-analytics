@@ -1,12 +1,13 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, shallowRef } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import DashboardChart from './components/DashboardChart.vue'
 import { createDashboardLoader } from './api/dashboard.mjs'
 import { useSession } from './api/session.mjs'
 
 const props = defineProps({ authenticated: Boolean })
 const router = useRouter()
+const route = useRoute()
 const session = props.authenticated ? useSession() : null
 const user = session?.current?.user
 const department = user?.department ?? null
@@ -67,6 +68,7 @@ onBeforeUnmount(loader.dispose)
       <span class="demo-badge"><span aria-hidden="true" class="status-dot"></span>{{ authenticated ? '门诊日汇总集市' : preview ? '节点 8 宽表 · 本地只读预览' : '课程样例数据 · 本地演示' }}</span>
       <div v-if="authenticated" class="account-actions">
         <RouterLink :to="{ name: 'reports' }">门诊报表</RouterLink>
+        <RouterLink v-if="user?.role === 'admin'" :to="{ name: 'admin-users' }">用户管理</RouterLink>
         <span>{{ user?.username }}</span>
         <button type="button" class="button secondary" @click="leave">退出登录</button>
       </div>
@@ -75,6 +77,7 @@ onBeforeUnmount(loader.dispose)
   </header>
 
   <main id="main" class="workspace" tabindex="-1">
+    <p v-if="authenticated && route.query.denied === 'admin'" class="report-error" role="alert">只有管理员可以打开用户管理。</p>
     <section class="page-heading" aria-labelledby="page-title">
       <div><p class="eyebrow">OUTPATIENT OVERVIEW</p><h1 id="page-title">门诊驾驶舱</h1><p class="lead">看清门诊规模、每日变化与科室分布。</p><a v-if="!authenticated" :href="preview ? '/' : '/?source=preview'">{{ preview ? '返回 CSV 看板' : '打开宽表预览' }}</a></div>
       <div v-if="meta" class="available-range"><span>可用数据日期</span><strong>{{ meta.available_start_date }} — {{ meta.available_end_date }}</strong></div>
