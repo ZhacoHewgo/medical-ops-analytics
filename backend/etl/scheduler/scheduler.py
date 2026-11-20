@@ -22,8 +22,10 @@ from apscheduler.jobstores.memory import MemoryJobStore
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.schedulers.base import STATE_STOPPED
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 
 from etl.config.source_config import OdsError, SOURCES, database_options
+from etl.scheduler import policy
 
 
 LOG_ROOT = Path(__file__).resolve().parents[1] / "logs"
@@ -428,15 +430,50 @@ def _daily_run(env):
         print(json.dumps(dict(code=_safe_code(error), status="FAILED")))
 
 
-def setup_schedule(*, env="dev"):
+def _managed_daily_run(env, version):
+    try:
+        if policy.claim_day(env, datetime.now(SHANGHAI).date(), version):
+            _daily_run(env)
+    except OdsError:
+        _scheduler_logger("scheduler").warning("ETL_SCHEDULE_FAILED")
+
+
+def _add_daily_job(scheduler, env, hour, minute, *, version=None):
+    kwargs = {"env": env} if version is None else {"env": env, "version": version}
+    callback = _daily_run if version is None else _managed_daily_run
+    scheduler.add_job(callback, CronTrigger(hour=hour, minute=minute, timezone=SHANGHAI),
+                      kwargs=kwargs, id="ods_daily", name="ods_daily",
+                      replace_existing=True, max_instances=1, coalesce=True,
+                      misfire_grace_time=3600)
+
+
+def _refresh_managed_daily(scheduler, env):
+    configured = policy.read_policy(env)
+    job = scheduler.get_job("ods_daily")
+    if not configured.enabled:
+        if job is not None:
+            scheduler.remove_job("ods_daily")
+    elif job is None or job.kwargs.get("version") != configured.version:
+        _add_daily_job(scheduler, env, configured.hour, configured.minute, version=configured.version)
+
+
+def setup_schedule(*, env="dev", managed=False):
     _environment(env)
-    if env not in _SCHEDULERS:
+    key = (env, "managed") if managed else env
+    if key not in _SCHEDULERS:
         scheduler = _LockedScheduler(env, timezone=SHANGHAI,
-                                    jobstores={"default": MemoryJobStore()},
-                                    logger=_scheduler_logger("scheduler"))
-        scheduler.add_job(_daily_run, CronTrigger(hour=2, minute=0, timezone=SHANGHAI),
-                          kwargs={"env": env}, id="ods_daily", name="ods_daily",
-                          replace_existing=True, max_instances=1, coalesce=True,
-                          misfire_grace_time=3600)
-        _SCHEDULERS[env] = scheduler
-    return _SCHEDULERS[env]
+                                     jobstores={"default": MemoryJobStore()},
+                                     logger=_scheduler_logger("scheduler"))
+        if managed:
+            try:
+                _refresh_managed_daily(scheduler, env)
+            except OdsError:
+                raise EtlError("ETL_SCHEDULE_FAILED") from None
+            scheduler.add_job(_refresh_managed_daily, IntervalTrigger(seconds=10),
+                              kwargs={"scheduler": scheduler, "env": env},
+                              id="ods_schedule_sync", name="ods_schedule_sync",
+                              max_instances=1, coalesce=True, misfire_grace_time=10)
+        else:
+            _add_daily_job(scheduler, env, 2, 0)
+        _SCHEDULERS[key] = scheduler
+    return _SCHEDULERS[key]

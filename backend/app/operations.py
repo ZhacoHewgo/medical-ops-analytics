@@ -9,7 +9,7 @@ import subprocess
 import sys
 
 from etl.config import source_config as sources
-from etl.scheduler import scheduler
+from etl.scheduler import policy, scheduler
 
 TASKS = ("extract_ods", "clean_dwd", "quality_check", "build_dwd")
 STATES = frozenset(("START", "SUCCESS", "FAILED", "BLOCKED", "PARTIAL"))
@@ -141,6 +141,20 @@ def finish_action(ticket, outcome, code):
 
 def environment():
     return {"hospital": "dev", "hospital_test": "test"}[sources.database_options()["database"]]
+
+
+def update_schedule(env, actor, expected_version, enabled, hour, minute, current_admin):
+    with scheduler._lock(env, "schedule_policy"):
+        with sources.database_cursor(policy.DB_ERROR, write=True) as cursor:
+            if not current_admin(cursor, actor, lock=True):
+                return "UNAUTHORIZED", None
+            previous = policy.read_policy(env, cursor, lock=True)
+            if previous.version != expected_version:
+                return "STALE", None
+            if (previous.enabled, previous.hour, previous.minute) == (enabled, hour, minute):
+                return "UNCHANGED", previous
+            current = policy.write_policy(cursor, env, actor.user_id, previous, enabled, hour, minute)
+            return "CHANGED", current
 
 
 def _event(line, env, identity):

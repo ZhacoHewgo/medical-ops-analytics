@@ -1,6 +1,7 @@
 <script setup>
 import { onMounted, ref, shallowRef } from 'vue'
 import { useManagementRequest } from '../../api/admin.mjs'
+import ScheduleEditor from './ScheduleEditor.vue'
 
 const request = useManagementRequest('ops')
 const names = { extract_ods: 'ODS 采集', clean_dwd: 'DWD 清洗', quality_check: '质量检查', build_dwd: '宽表构建' }
@@ -100,5 +101,6 @@ onMounted(load)
       </div>
       <p v-else-if="!error">暂无任务记录。</p>
     </section>
+    <ScheduleEditor />
   </main>
 </template>

@@ -14,7 +14,7 @@ from app.main import create_app
 
 
 def run_admin_browser(root, names, password, *, scenario="admin", scenario_env=None):
-    assert scenario in {"admin", "operations", "registration"}
+    assert scenario in {"admin", "operations", "registration", "schedule"}
     app = create_app()
     dist = root / "frontend" / "dist"
     assert (dist / "index.html").is_file(), "Build frontend before testing admin browser routes"
