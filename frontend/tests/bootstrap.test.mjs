@@ -22,6 +22,8 @@ test('bootstrap registers Pinia and router before mounting the unchanged dashboa
     ReportCenter: { name: 'ReportCenter', render: () => null },
     UserManage: { name: 'UserManage', render: () => null },
     RoleManage: { name: 'RoleManage', render: () => null },
+    DataSourceManage: { name: 'DataSourceManage', render: () => null },
+    TaskManage: { name: 'TaskManage', render: () => null },
     useSession: () => session,
     createApp: component => {
       root = component
@@ -39,14 +41,19 @@ test('bootstrap registers Pinia and router before mounting the unchanged dashboa
   assert.equal(mountedAt, '#app')
   assert.equal(root.render().type, RouterView)
   const router = app.config.globalProperties.$router
-  assert.deepEqual(router.getRoutes().map(route => route.path).sort(), ['/', '/admin/roles', '/admin/users', '/login', '/outpatient', '/reports'])
+  assert.deepEqual(router.getRoutes().map(route => route.path).sort(), ['/', '/admin/roles', '/admin/users', '/login', '/ops/sources', '/ops/tasks', '/outpatient', '/reports'])
   await router.push('/')
   assert.equal(router.currentRoute.value.matched[0].components.default, dashboard)
   await router.push('/reports')
   assert.equal(router.currentRoute.value.name, 'login')
   await router.push('/admin/users')
   assert.equal(router.currentRoute.value.name, 'login')
+  session.current = { user: { role: 'department' } }
+  await router.push('/ops/sources')
+  assert.equal(router.currentRoute.value.query.denied, 'ops')
   session.current = { user: { role: 'analyst' } }
+  await router.push('/ops/tasks')
+  assert.equal(router.currentRoute.value.name, 'ops-tasks')
   await router.push('/admin/roles')
   assert.equal(router.currentRoute.value.name, 'outpatient')
   assert.equal(router.currentRoute.value.query.denied, 'admin')

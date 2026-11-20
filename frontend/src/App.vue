@@ -69,6 +69,7 @@ onBeforeUnmount(loader.dispose)
       <div v-if="authenticated" class="account-actions">
         <RouterLink :to="{ name: 'reports' }">门诊报表</RouterLink>
         <RouterLink v-if="user?.role === 'admin'" :to="{ name: 'admin-users' }">用户管理</RouterLink>
+        <RouterLink v-if="user?.role !== 'department'" :to="{ name: 'ops-sources' }">数据源与任务</RouterLink>
         <span>{{ user?.username }}</span>
         <button type="button" class="button secondary" @click="leave">退出登录</button>
       </div>
@@ -78,6 +79,7 @@ onBeforeUnmount(loader.dispose)
 
   <main id="main" class="workspace" tabindex="-1">
     <p v-if="authenticated && route.query.denied === 'admin'" class="report-error" role="alert">只有管理员可以打开用户管理。</p>
+    <p v-if="authenticated && route.query.denied === 'ops'" class="report-error" role="alert">当前账号无权查看数据源与任务。</p>
     <section class="page-heading" aria-labelledby="page-title">
       <div><p class="eyebrow">OUTPATIENT OVERVIEW</p><h1 id="page-title">门诊驾驶舱</h1><p class="lead">看清门诊规模、每日变化与科室分布。</p><a v-if="!authenticated" :href="preview ? '/' : '/?source=preview'">{{ preview ? '返回 CSV 看板' : '打开宽表预览' }}</a></div>
       <div v-if="meta" class="available-range"><span>可用数据日期</span><strong>{{ meta.available_start_date }} — {{ meta.available_end_date }}</strong></div>

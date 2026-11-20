@@ -157,3 +157,7 @@ tbody th { max-width: 160px; }
 @media (max-width: 900px) {
   .admin-layout { grid-template-columns: minmax(0, 1fr); }
 }
+
+.ops-feedback { margin: 12px 0; flex-wrap: wrap; align-items: center; }
+.ops-heading { flex-wrap: wrap; }
+.ops-heading .filter-actions { flex-wrap: wrap; }

@@ -13,7 +13,8 @@ from starlette.staticfiles import StaticFiles
 from app.main import create_app
 
 
-def run_admin_browser(root, names, password):
+def run_admin_browser(root, names, password, *, scenario="admin"):
+    assert scenario in {"admin", "operations"}
     app = create_app()
     dist = root / "frontend" / "dist"
     assert (dist / "index.html").is_file(), "Build frontend before testing admin browser routes"
@@ -22,6 +23,8 @@ def run_admin_browser(root, names, password):
     @app.get("/outpatient")
     @app.get("/admin/users")
     @app.get("/admin/roles")
+    @app.get("/ops/sources")
+    @app.get("/ops/tasks")
     def spa():
         return FileResponse(dist / "index.html")
 
@@ -41,14 +44,14 @@ def run_admin_browser(root, names, password):
                 sleep(0.025)
             assert server.started
             result = subprocess.run(
-                ["node", str(root / "frontend/tests/admin-browser.mjs"), f"http://127.0.0.1:{port}"],
+                ["node", str(root / f"frontend/tests/{scenario}-browser.mjs"), f"http://127.0.0.1:{port}"],
                 env=env, capture_output=True, text=True, timeout=100,
             )
             if result.returncode:
-                lines = re.findall(r"admin-browser\.mjs:\d+", result.stderr)
+                lines = re.findall(rf"{scenario}-browser\.mjs:\d+", result.stderr)
                 raise AssertionError("Chromium assertion location: " + ", ".join(lines))
             evidence = result.stdout.strip()
-            assert re.fullmatch(r"ADMIN_BROWSER_OK [a-z0-9_= ]+", evidence)
+            assert re.fullmatch(rf"{scenario.upper()}_BROWSER_OK [a-z0-9_= ]+", evidence)
             print(evidence)
         finally:
             server.should_exit = True

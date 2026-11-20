@@ -1,8 +1,8 @@
 <script setup>
 import { onMounted, ref, shallowRef } from 'vue'
-import { useAdminRequest } from '../../api/admin.mjs'
+import { useManagementRequest } from '../../api/admin.mjs'
 
-const request = useAdminRequest()
+const request = useManagementRequest()
 const roles = shallowRef([])
 const loading = ref(false)
 const error = ref('')
@@ -10,6 +10,8 @@ const descriptions = {
   read_hospital: '查询全院获准的聚合数据',
   read_department: '查询本科室获准的聚合数据',
   manage_accounts: '查看和管理平台账号',
+  read_operations: '查看数据源与任务状态',
+  run_operations: '检查登记文件和触发获准的采集',
 }
 
 async function load() {

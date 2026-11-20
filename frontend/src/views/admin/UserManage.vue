@@ -1,8 +1,8 @@
 <script setup>
 import { computed, onMounted, reactive, ref, shallowRef } from 'vue'
-import { roleLabels, useAdminRequest } from '../../api/admin.mjs'
+import { roleLabels, useManagementRequest } from '../../api/admin.mjs'
 
-const request = useAdminRequest()
+const request = useManagementRequest()
 const emptyForm = { username: '', password: '', role: 'analyst', department: '', enabled: true }
 const form = reactive({ ...emptyForm })
 const users = shallowRef([])
