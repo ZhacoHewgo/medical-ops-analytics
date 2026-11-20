@@ -1,5 +1,4 @@
 import json
-from collections import Counter
 from ipaddress import ip_address
 
 from fastapi import FastAPI, HTTPException, Request, Response
@@ -8,7 +7,8 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.core.config import get_settings
-from app.outpatient import strict_date, validate_aggregate
+from app.outpatient import validate_aggregate
+from app.outpatient_response import check_dates, summarize_outpatient
 from app.outpatient_preview import load_preview
 from etl.config.source_config import OdsError
 
@@ -38,41 +38,6 @@ async def overview(start_date: str | None = None, end_date: str | None = None, d
     return summarize_outpatient(document, start_date, end_date, dept_code)
 
 
-def check_dates(start, end):
-    try:
-        for day in (start, end):
-            if day is not None:
-                strict_date(day)
-    except ValueError:
-        raise HTTPException(status_code=422, detail="Dates must be valid calendar dates in YYYY-MM-DD format") from None
-    if start is not None and end is not None and start > end:
-        raise HTTPException(status_code=422, detail="start_date must be on or before end_date")
-
-
-def summarize_outpatient(document, start_date, end_date, dept_code):
-    meta = document["meta"]
-    start = meta["available_start_date"] if start_date is None else start_date
-    end = meta["available_end_date"] if end_date is None else end_date
-    check_dates(start, end)
-    if dept_code is not None and dept_code not in meta["department_codes"]:
-        raise HTTPException(status_code=422, detail="Unknown dept_code")
-    daily, departments = Counter(), Counter()
-    for item in document["counts"]:
-        if start <= item["date"] <= end and (dept_code is None or item["dept_code"] == dept_code):
-            daily[item["date"]] += item["visits"]
-            departments[item["dept_code"]] += item["visits"]
-    return {"code": 0, "msg": "ok", "data": {
-        "filters": {"start_date": start, "end_date": end, "dept_code": dept_code},
-        "outpatient_visits": sum(daily.values()),
-        "daily_trend": [{"date": day, "visits": count} for day, count in sorted(daily.items())],
-        "department_ranking": [
-            {"dept_code": code, "visits": count}
-            for code, count in sorted(departments.items(), key=lambda item: (-item[1], item[0]))
-        ],
-        "meta": meta,
-    }}
-
-
 def outpatient_preview(
     request: Request, response: Response, start_date: str | None = None, end_date: str | None = None,
     dept_code: str | None = None,
@@ -99,7 +64,8 @@ def outpatient_preview(
 
 
 def create_app() -> FastAPI:
-    application = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+    auth_enabled = get_settings().auth_enabled
+    application = FastAPI(docs_url=None, redoc_url=None, openapi_url="/openapi.json" if auth_enabled else None)
     application.add_exception_handler(StarletteHTTPException, http_error)
     application.add_exception_handler(RequestValidationError, validation_error)
     application.add_api_route("/health", health_check, methods=["GET"])
@@ -110,9 +76,12 @@ def create_app() -> FastAPI:
         responses={403: {"description": "仅本机预览"}, 422: {"description": "筛选无效"},
                    503: {"description": "认证构建不可用或已过期"}},
     )
-    if get_settings().auth_enabled:
-        from app.api.routers.auth_router import router
-        application.include_router(router)
+    if auth_enabled:
+        from app.api.routers.auth_router import router as auth_router
+        from app.api.routers.outpatient_router import router as outpatient_router
+
+        application.include_router(auth_router)
+        application.include_router(outpatient_router)
     return application
 
 
