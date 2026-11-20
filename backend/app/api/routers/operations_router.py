@@ -1,10 +1,11 @@
 """Read operations metadata and perform audited platform maintenance actions."""
+from dataclasses import asdict
 from ipaddress import ip_address
 import os
 from typing import Annotated, Generic, Literal, TypeVar
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from pydantic import BaseModel, ConfigDict, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StringConstraints
 
 from app.api.routers.auth_router import Admin, _current_admin
 from app.core.auth_store import Account
@@ -12,7 +13,7 @@ from app.core.deps import require_role
 from app.core.security import unauthorized
 from app import operations
 from etl.config import source_config as sources
-from etl.scheduler import scheduler
+from etl.scheduler import policy, scheduler
 
 router = APIRouter(prefix="/api/ops", tags=["数据源与任务"])
 Reader = Annotated[Account, Depends(require_role(("admin", "analyst")))]
@@ -91,6 +92,27 @@ class TaskRow(BaseModel):
 class TaskStatus(BaseModel):
     items: list[TaskRow]
     can_run: bool
+
+
+class ScheduleChange(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    enabled: StrictBool
+    hour: int = Field(strict=True, ge=0, le=23)
+    minute: int = Field(strict=True, ge=0, le=59)
+    expected_version: int = Field(strict=True, ge=0, le=4294967295)
+
+
+class ScheduleState(BaseModel):
+    enabled: bool
+    hour: int
+    minute: int
+    version: int
+    can_edit: bool
+    timezone: Literal["Asia/Shanghai"]
+
+
+class ScheduleReceipt(ScheduleState):
+    changed: bool
 
 
 class RunReceipt(BaseModel):
@@ -209,6 +231,41 @@ def task_list(actor: Reader, request: Request, response: Response):
     except (sources.OdsError, OSError, ValueError, TypeError, RecursionError):
         raise HTTPException(503, "Task status unavailable") from None
     return _reply(response, {"items": items, "can_run": actor.role == "admin" and _admit(request)})
+
+
+@router.get("/tasks/schedule", response_model=Result[ScheduleState], responses=ERRORS, summary="查看每日采集的配置")
+def schedule_status(actor: Reader, request: Request, response: Response):
+    try:
+        configured = policy.read_policy(operations.environment())
+    except sources.OdsError:
+        raise HTTPException(503, "Schedule settings unavailable") from None
+    return _reply(response, {**asdict(configured), "timezone": "Asia/Shanghai",
+                            "can_edit": actor.role == "admin" and _admit(request, "OPS_SCHEDULE_WRITE_ENABLED")})
+
+
+@router.put("/tasks/schedule", response_model=Result[ScheduleReceipt],
+            responses={**ERRORS, 409: {"description": "配置已变化或正在更新"}},
+            summary="启停每日采集并调整前台托管调度时间")
+def change_schedule(body: ScheduleChange, actor: Admin, request: Request, response: Response):
+    if not _admit(request, "OPS_SCHEDULE_WRITE_ENABLED"):
+        raise HTTPException(403, "Schedule changes require explicit local enablement")
+    try:
+        outcome, configured = operations.update_schedule(
+            operations.environment(), actor, body.expected_version, body.enabled,
+            body.hour, body.minute, _current_admin,
+        )
+    except scheduler.EtlError as error:
+        if error.code == "ETL_SCHEDULER_LOCKED":
+            raise HTTPException(409, "Schedule settings are being updated") from None
+        raise HTTPException(503, "Schedule lock unavailable") from None
+    except sources.OdsError:
+        raise HTTPException(503, "Schedule settings or audit unavailable") from None
+    if outcome == "STALE":
+        raise HTTPException(409, "Schedule settings have changed; reload before editing")
+    if outcome == "UNAUTHORIZED":
+        raise unauthorized()
+    return _reply(response, {**asdict(configured), "timezone": "Asia/Shanghai", "can_edit": True,
+                            "changed": outcome == "CHANGED"})
 
 
 @router.post("/tasks/extract/run", response_model=Result[RunReceipt],
