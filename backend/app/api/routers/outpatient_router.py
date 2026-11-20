@@ -76,7 +76,7 @@ class SummaryResponse(BaseModel):
     data: Data
 
 
-def audit_access(user, action, department, status):
+def audit_access(user, action, department, status, *, resource="outpatient"):
     try:
         with database_cursor(DB_DOWN, write=True) as cursor:
             current = read_user(cursor, user_id=user.user_id, lock=True)
@@ -85,7 +85,7 @@ def audit_access(user, action, department, status):
             if valid:
                 cursor.execute(
                     "INSERT INTO auth_data_access (actor_id,resource,action,department,http_status) "
-                    "VALUES (%s,'outpatient',%s,%s,%s)", (user.user_id, action, department, status),
+                    "VALUES (%s,%s,%s,%s,%s)", (user.user_id, resource, action, department, status),
                 )
     except OdsError:
         raise HTTPException(503, "Access audit unavailable") from None
