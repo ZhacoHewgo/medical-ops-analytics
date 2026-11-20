@@ -41,24 +41,25 @@ def load_preview(*, start_date=None, end_date=None, dept_code=None):
 
 def _read_ads_counts(cursor, dataset, batch, run_id, start, end, dept_code):
     expected = read_counts(cursor, dataset, start, end, dept_code)
-    sql = (
-        "SELECT a.stat_date,a.dept_code,a.outpatient_visits FROM ads_outpatient_theme a "
-        "JOIN dws_dept_daily d ON d.dataset_id=a.dataset_id AND d.stat_date=a.stat_date "
-        "AND d.dept_code=a.dept_code AND d.batch_date=a.batch_date "
-        "AND d.source_build_run_id=a.source_build_run_id AND d.outpatient_visits=a.outpatient_visits "
-        "AND d.ads_status='PASS' WHERE a.dataset_id=%s AND a.batch_date=%s "
-        "AND a.source_build_run_id=%s AND a.stat_date BETWEEN %s AND %s"
-    )
+    where = " WHERE dataset_id=%s AND batch_date=%s AND source_build_run_id=%s AND stat_date BETWEEN %s AND %s"
     params = (dataset, batch, run_id, start, end)
     if dept_code is not None:
-        sql += " AND a.dept_code=%s"
+        where += " AND dept_code=%s"
         params += (dept_code,)
-    cursor.execute(sql + " ORDER BY a.stat_date,a.dept_code", params)
-    actual = [{"date": day.isoformat(), "dept_code": dept, "visits": count}
-              for day, dept, count in cursor.fetchall()]
-    if actual != expected:
+    cursor.execute(
+        "SELECT 'ads',stat_date,dept_code,outpatient_visits FROM ads_outpatient_theme" + where
+        + " UNION ALL SELECT 'dws',stat_date,dept_code,"
+        "CASE WHEN ads_status='PASS' THEN outpatient_visits END FROM dws_dept_daily" + where,
+        params + params,
+    )
+    # Keep keys from both publications so an unpaired row cannot disappear into an empty result.
+    published = {"ads": {}, "dws": {}}
+    for layer, day, dept, count in cursor.fetchall():
+        published[layer][(day.isoformat(), dept)] = count
+    truth = {(row["date"], row["dept_code"]): row["visits"] for row in expected}
+    if published["ads"] != truth or published["dws"] != truth:
         raise OdsError("OUTPATIENT_ADS_INCOMPLETE")
-    return actual
+    return expected
 
 
 def load_ads(*, start_date=None, end_date=None, dept_code=None, allowed_department=None):

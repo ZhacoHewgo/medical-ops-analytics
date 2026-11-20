@@ -161,6 +161,37 @@ def test_mysql_ads_summary_export_and_scope(mysql_pipeline, auth_client, monkeyp
         assert {item["dept_code"] for item in scoped["department_ranking"]} == {DEPT}
         assert summary(analyst, start_date=LAST, end_date=LAST).json()["data"]["outpatient_visits"] == 0
 
+        empty = {"start_date": LAST, "end_date": LAST}
+        for table, extra in ((marts.ADS, ""), (marts.DWS, ", ads_status")):
+            with sources.connect_database(test_only=True) as db, db.cursor() as cursor:
+                cursor.execute(
+                    f"INSERT INTO {table} ({', '.join(marts.COLUMNS)}{extra}) "
+                    "SELECT dataset_id,%s,dept_code,batch_date,source_build_run_id,"
+                    f"outpatient_visits,outpatient_fee_samples,outpatient_total_fee,fee_status{extra} "
+                    f"FROM {table} WHERE dataset_id=%s AND stat_date=%s AND dept_code=%s",
+                    (LAST, dataset, DAY, DEPT),
+                )
+                assert cursor.rowcount == 1
+                db.commit()
+            try:
+                for endpoint in (summary, export):
+                    for headers in (analyst, department):
+                        rejected = endpoint(headers, **empty)
+                        assert rejected.status_code == 503, f"{table} single publication must return 503"
+                        assert rejected.json()["data"] is None
+                unaffected = summary(analyst, dept_code=OTHER, **empty)
+                assert unaffected.status_code == 200
+                assert unaffected.json()["data"]["outpatient_visits"] == 0
+            finally:
+                with sources.connect_database(test_only=True) as db, db.cursor() as cursor:
+                    cursor.execute(
+                        f"DELETE FROM {table} WHERE dataset_id=%s AND stat_date=%s AND dept_code=%s",
+                        (dataset, LAST, DEPT),
+                    )
+                    db.commit()
+        assert summary(analyst, **empty).json()["data"]["outpatient_visits"] == 0
+        print("ADS_PUBLICATION_OK ads_only=503 dws_only=503 other_department=0 restored=0 endpoints=2")
+
         file = export(department)
         assert file.status_code == 200 and file.headers["Cache-Control"] == "no-store"
         assert file.headers["Content-Type"].endswith("spreadsheetml.sheet")
