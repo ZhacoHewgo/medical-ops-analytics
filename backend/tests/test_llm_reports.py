@@ -1,4 +1,5 @@
 import csv
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -54,7 +55,28 @@ def test_handbook_answers_are_versioned_and_fail_closed(tmp_path, monkeypatch):
     assert missing.value.status_code == 503
 
 
-def test_mysql_reports_anomaly_kb_and_scope(mysql_pipeline, auth_client, monkeypatch):
+@pytest.mark.parametrize("change", [
+    {"entries": []},
+    {"version": None},
+    {"source_sha256": "invalid"},
+    {"entries": {"MOPS-OUT-01": {"title": "门诊人次", "answer": None}}},
+])
+def test_invalid_handbook_is_unavailable(change, tmp_path, monkeypatch):
+    from fastapi import HTTPException
+
+    from app.llm import kb
+
+    document = json.loads(kb.HANDBOOK.read_text())
+    path = tmp_path / "handbook.json"
+    path.write_text(json.dumps({**document, **change}))
+    monkeypatch.setattr(kb, "HANDBOOK", path)
+
+    with pytest.raises(HTTPException) as malformed:
+        kb.kb_answer("MOPS-OUT-01")
+    assert malformed.value.status_code == 503
+
+
+def test_mysql_reports_anomaly_kb_and_scope(mysql_pipeline, auth_client, monkeypatch, tmp_path):
     dataset, batch, selected, quality = mysql_pipeline
     root = sources.PROJECT_ROOT
     client, names, _, admin_id = auth_client
@@ -151,10 +173,21 @@ def test_mysql_reports_anomaly_kb_and_scope(mysql_pipeline, auth_client, monkeyp
         assert "上期" in knowledge.json()["data"]["answer"]
         miss = call(KB, admin, question="能否提供患者地址？").json()["data"]
         assert miss["status"] == "NOT_FOUND" and miss["refs"] == []
+        from app.llm import kb
+
+        malformed = tmp_path / "missing-provenance.json"
+        handbook = json.loads(kb.HANDBOOK.read_text())
+        del handbook["source_sha256"]
+        malformed.write_text(json.dumps(handbook))
+        with monkeypatch.context() as broken:
+            broken.setattr(kb, "HANDBOOK", malformed)
+            unavailable = call(KB, admin, question="MOPS-OUT-02")
+            assert unavailable.status_code == 503 and unavailable.json()["data"] is None
         with sources.connect_database(test_only=True) as db, db.cursor() as cursor:
             cursor.execute("SELECT resource,http_status FROM auth_data_access WHERE actor_id=%s", (admin_id,))
             audit = set(cursor.fetchall())
-            assert {("outpatient_report", 200), ("outpatient_anomaly", 200), ("indicator_kb", 200)} <= audit
+            assert {("outpatient_report", 200), ("outpatient_anomaly", 200),
+                    ("indicator_kb", 200), ("indicator_kb", 503)} <= audit
         marts.build_dws_daily(DEPT, FEB, **args)
         unavailable = month(department)
         assert unavailable.status_code == 503 and unavailable.json()["data"] is None

@@ -14,6 +14,17 @@ def kb_answer(question):
     try:
         handbook = json.loads(HANDBOOK.read_text(encoding="utf-8"))
         entries = handbook["entries"]
+        required = ("source", "version", "status")
+        if not all(isinstance(handbook[key], str) and handbook[key].strip() for key in required):
+            raise ValueError
+        if re.fullmatch(r"[0-9a-f]{64}", handbook["source_sha256"]) is None:
+            raise ValueError
+        if not isinstance(entries, dict) or not entries or any(
+            _METRIC_CODE.fullmatch(code) is None or not isinstance(item, dict)
+            or not all(isinstance(item.get(key), str) and item[key].strip() for key in ("title", "answer"))
+            for code, item in entries.items()
+        ):
+            raise ValueError
     except (OSError, ValueError, KeyError, TypeError):
         raise HTTPException(503, "暂无可用的指标口径手册") from None
     codes = set(_METRIC_CODE.findall(question.upper()))
