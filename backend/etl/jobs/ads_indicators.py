@@ -116,28 +116,32 @@ def _read_counts(cursor, dataset, batch, run, first, last):
         (dataset, first, last),
     )
     expected = {(day, dept): count for day, dept, count in cursor.fetchall()}
+    current = (dataset, batch, run, first, last)
     cursor.execute(
-        "SELECT a.stat_date,a.dept_code,a.outpatient_visits FROM ads_outpatient_theme a "
-        "JOIN dws_dept_daily d ON d.dataset_id=a.dataset_id AND d.stat_date=a.stat_date "
-        "AND d.dept_code=a.dept_code AND d.batch_date=a.batch_date "
-        "AND d.source_build_run_id=a.source_build_run_id AND d.outpatient_visits=a.outpatient_visits "
-        "AND d.ads_status='PASS' WHERE a.dataset_id=%s AND a.batch_date=%s "
-        "AND a.source_build_run_id=%s AND a.stat_date BETWEEN %s AND %s",
-        (dataset, batch, run, first, last),
+        "SELECT stat_date,dept_code,outpatient_visits,ads_status FROM dws_dept_daily "
+        "WHERE dataset_id=%s AND batch_date=%s AND source_build_run_id=%s AND stat_date BETWEEN %s AND %s",
+        current,
     )
-    actual = {(day, dept): count for day, dept, count in cursor.fetchall()}
-    return expected, actual
+    dws = {(day, dept): (count, status) for day, dept, count, status in cursor.fetchall()}
+    cursor.execute(
+        "SELECT stat_date,dept_code,outpatient_visits FROM ads_outpatient_theme "
+        "WHERE dataset_id=%s AND batch_date=%s AND source_build_run_id=%s AND stat_date BETWEEN %s AND %s",
+        current,
+    )
+    ads = {(day, dept): count for day, dept, count in cursor.fetchall()}
+    return expected, dws, ads
 
 
-def _period_counts(expected, actual, grain):
+def _period_counts(expected, dws, ads, grain):
     totals = Counter()
     missing = set()
-    for day, dept in expected.keys() | actual.keys():
+    for day, dept in expected.keys() | dws.keys() | ads.keys():
+        key = (day, dept)
         period = day if grain == "day" else day.replace(day=1)
-        value = actual.get((day, dept))
-        if expected.get((day, dept)) != value:
+        value = expected.get(key)
+        if value is None or dws.get(key) != (value, "PASS") or ads.get(key) != value:
             missing.update(((period, dept), (period, None)))
-        elif value is not None:
+        else:
             totals[(period, dept)] += value
             totals[(period, None)] += value
     return totals, missing
@@ -160,8 +164,8 @@ def _calculate(cursor, span, grain, dataset_id, batch_date, env, *, write):
     if not allowed[0] <= first <= last <= allowed[1]:
         raise OdsError("N10_RANGE_OUTSIDE_BUILD")
     prior = (first - timedelta(days=1)).replace(day=1) if grain == "month" and first > low else first
-    expected, actual = _read_counts(cursor, dataset, batch, run, max(prior, low), min(last, high))
-    totals, missing = _period_counts(expected, actual, grain)
+    expected, dws, ads = _read_counts(cursor, dataset, batch, run, max(prior, low), min(last, high))
+    totals, missing = _period_counts(expected, dws, ads, grain)
     cursor.execute("SELECT dept_code FROM dim_department WHERE dataset_id=%s", (dataset,))
     scopes = [None, *(row[0] for row in cursor.fetchall())]
     rows = []

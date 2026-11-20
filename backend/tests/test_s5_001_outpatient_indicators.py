@@ -129,6 +129,34 @@ def test_mysql_outpatient_indicators_and_bounded_rerun(mysql_pipeline, monkeypat
         assert at(GROWTH, FEB) == (current, 1, 2, Decimal("50"), None)
         assert at(GROWTH, MAR) == (current, -3, 3, Decimal("-100"), None)
         assert at(GROWTH, FEB, "DEPT:SIM_DEPT_02")[3:] == (None, "ZERO_BASE")
+        # A row in only one publication table must not turn an empty day into a certified zero.
+        for table, department, extra in (
+            (marts.ADS, "SIM_DEPT_01", ""),
+            (marts.DWS, "SIM_DEPT_02", ", ads_status"),
+        ):
+            with sources.connect_database(test_only=True) as db, db.cursor() as cursor:
+                cursor.execute(
+                    f"INSERT INTO {table} ({', '.join(marts.COLUMNS)}{extra}) "
+                    "SELECT dataset_id, %s, dept_code, batch_date, source_build_run_id, "
+                    f"outpatient_visits, outpatient_fee_samples, outpatient_total_fee, fee_status{extra} "
+                    f"FROM {table} WHERE dataset_id=%s AND stat_date=%s AND dept_code=%s",
+                    (END, dataset, FEB, department),
+                )
+                assert cursor.rowcount == 1
+                db.commit()
+            try:
+                empty = indicators.calc_outpatient_volume(END, END, "day", **args).set_index("dimension_key")
+                for scope in ("ALL", f"DEPT:{department}"):
+                    actual = empty.loc[scope, ["metric_value", "null_reason"]].tolist()
+                    assert actual == [None, "ADS_NOT_PUBLISHED"], f"{table} orphan must remain NULL"
+            finally:
+                with sources.connect_database(test_only=True) as db, db.cursor() as cursor:
+                    cursor.execute(
+                        f"DELETE FROM {table} WHERE dataset_id=%s AND stat_date=%s AND dept_code=%s",
+                        (dataset, END, department),
+                    )
+                    db.commit()
+
         baseline = published(dataset)
         indicators.rerun((FEB, END), "month", **args)
         assert published(dataset) == baseline
