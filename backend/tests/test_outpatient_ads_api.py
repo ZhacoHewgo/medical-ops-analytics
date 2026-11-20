@@ -221,6 +221,24 @@ def test_mysql_ads_summary_export_and_scope(mysql_pipeline, auth_client, monkeyp
         finally:
             workbook.close()
 
+        if seconds := int(os.environ.get("MOPS_MIXED_HTTP_SECONDS", "0")):
+            from collections import Counter
+
+            from mixed_http_rehearsal import rehearse
+
+            assert seconds > 0
+
+            def audits():
+                with sources.connect_database(test_only=True) as db, db.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT action,http_status,COUNT(*) FROM auth_data_access WHERE resource='outpatient' "
+                        "AND actor_id IN (SELECT user_id FROM auth_users WHERE username IN (%s,%s)) "
+                        "GROUP BY action,http_status", (names["analyst"], names["department"]),
+                    )
+                    return Counter({(action, status): total for action, status, total in cursor.fetchall()})
+
+            rehearse(create_app(), analyst, department, truth, original, DEPT, OTHER, LAST, audits, seconds=seconds)
+
         if os.environ.get("MOPS_REPORT_BROWSER") == "1":
             from report_browser_fixture import run_report_browser
 
