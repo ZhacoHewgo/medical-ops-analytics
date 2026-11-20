@@ -12,30 +12,39 @@ const messages = {
   503: '账号服务或审计暂不可用。请刷新核对后再操作。',
 }
 
-export function useAdminRequest() {
+const operationMessages = {
+  401: messages[401],
+  403: '当前账号或环境未获准执行这项操作。',
+  404: '没有找到该数据源。',
+  409: '操作发生冲突，请刷新状态后再试。',
+  503: '服务或审计暂不可用，请刷新核对状态。',
+}
+
+export function useManagementRequest(area = 'auth') {
+  const operations = area === 'ops'
   const session = useSession()
   const router = useRouter()
   const lifetime = new AbortController()
   onBeforeUnmount(() => lifetime.abort())
 
-  return async function request(path, { method = 'GET', data } = {}) {
+  return async function request(path, { method = 'GET', data, timeout = 15000 } = {}) {
     let response
     try {
       const headers = { Accept: 'application/json' }
       if (data) headers['Content-Type'] = 'application/json'
-      response = await session.request(`/api/auth/${path}`, {
+      response = await session.request(`/api/${area}/${path}`, {
         method, headers, body: data && JSON.stringify(data),
-        signal: AbortSignal.any([lifetime.signal, AbortSignal.timeout(15000)]),
+        signal: AbortSignal.any([lifetime.signal, AbortSignal.timeout(timeout)]),
       }, () => { void router.replace({ name: 'login', query: { expired: '1' } }) })
     } catch {
-      throw new Error('无法连接账号服务，请检查网络。')
+      throw new Error(operations ? '操作响应中断，请刷新核对状态。' : '无法连接账号服务，请检查网络。')
     }
-    if (response.status === 409) {
+    if (!operations && response.status === 409) {
       throw new Error(method === 'POST' ? '用户名已存在。' : '账号已变化或受保护，请刷新列表。')
     }
-    if (!response.ok) throw new Error(messages[response.status] || '账号操作失败，请刷新列表核对。')
+    if (!response.ok) throw new Error((operations ? operationMessages : messages)[response.status] || '服务请求失败，请刷新核对。')
     const payload = await response.json().catch(() => null)
-    if (payload?.code !== 0 || !payload.data) throw new Error('账号服务返回无效响应。')
+    if (payload?.code !== 0 || !payload.data) throw new Error('管理服务返回无效响应。')
     return payload.data
   }
 }

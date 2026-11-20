@@ -23,8 +23,8 @@ Admin = Annotated[Account, Depends(require_role(("admin",)))]
 MANAGEMENT_ERRORS = {401: {"description": "登录已失效"}, 403: {"description": "仅管理员可访问"},
                      503: {"description": "账号服务或审计不可用"}}
 ROLES = (
-    {"code": "admin", "label": "系统管理员", "permissions": ("read_hospital", "manage_accounts")},
-    {"code": "analyst", "label": "运营分析师", "permissions": ("read_hospital",)},
+    {"code": "admin", "label": "系统管理员", "permissions": ("read_hospital", "manage_accounts", "read_operations", "run_operations")},
+    {"code": "analyst", "label": "运营分析师", "permissions": ("read_hospital", "read_operations")},
     {"code": "department", "label": "科室账号", "permissions": ("read_department",)},
 )
 

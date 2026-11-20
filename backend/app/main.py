@@ -78,9 +78,11 @@ def create_app() -> FastAPI:
     )
     if auth_enabled:
         from app.api.routers.auth_router import router as auth_router
+        from app.api.routers.operations_router import router as operations_router
         from app.api.routers.outpatient_router import router as outpatient_router
 
         application.include_router(auth_router)
+        application.include_router(operations_router)
         application.include_router(outpatient_router)
     return application
 
