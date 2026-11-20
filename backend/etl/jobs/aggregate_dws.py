@@ -1,9 +1,9 @@
-"""Outpatient daily DWS and ADS over a current, certified Node 8 build."""
+"""Daily DWS and theme ADS over a current, certified Node 8 build."""
 from datetime import date as calendar_date
 import os
 
 from etl.config.source_config import OdsError, connect_database, validate_batch
-from etl.jobs import build_dwd as build, clean_dwd as clean
+from etl.jobs import aggregate_themes, build_dwd as build, clean_dwd as clean
 from etl.scheduler import scheduler
 
 
@@ -20,13 +20,15 @@ def build_dws_daily(dept, date, *, dataset_id=None, batch_date=None, env="dev"):
 
 
 def build_theme_marts(theme, *, dataset_id=None, batch_date=None, env="dev"):
-    if theme != "outpatient":
-        raise OdsError("N9_ARGUMENTS_INVALID")
-    return _run(None, None, "theme", dataset_id, batch_date, env)
+    if theme == "outpatient":
+        return _run(None, None, "theme", dataset_id, batch_date, env)
+    themes = aggregate_themes.validate_selection((theme,))
+    return _run(None, None, "themes_only", dataset_id, batch_date, env, themes=themes)
 
 
-def rerun(date_range, *, dataset_id=None, batch_date=None, env="dev"):
-    return _run(_date_range(date_range), None, "rerun", dataset_id, batch_date, env)
+def rerun(date_range, *, dataset_id=None, batch_date=None, env="dev", themes=()):
+    selected = aggregate_themes.validate_selection(themes)
+    return _run(_date_range(date_range), None, "rerun", dataset_id, batch_date, env, themes=selected)
 
 
 def _date_range(values):
@@ -41,7 +43,7 @@ def _date_range(values):
     return start, end
 
 
-def _run(span, dept, operation, dataset_id, batch_date, env):
+def _run(span, dept, operation, dataset_id, batch_date, env, *, themes=()):
     try:
         build._validate_public(dataset_id, batch_date, env)
     except OdsError as error:
@@ -49,19 +51,19 @@ def _run(span, dept, operation, dataset_id, batch_date, env):
         raise OdsError(code) from None
     try:
         with scheduler._lock(env, "run"):
-            return _transaction(span, dept, operation, dataset_id, batch_date, env)
+            return _transaction(span, dept, operation, dataset_id, batch_date, env, themes=themes)
     except scheduler.EtlError:
         raise OdsError("N9_RUN_LOCKED") from None
 
 
-def _transaction(span, dept, operation, dataset_id, batch_date, env):
+def _transaction(span, dept, operation, dataset_id, batch_date, env, *, themes=()):
     connection = connect_database()
     try:
         try:
             with connection.cursor() as cursor:
                 cursor.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
                 cursor.execute("START TRANSACTION")
-                result = _aggregate(cursor, span, dept, operation, dataset_id, batch_date, env)
+                result = _aggregate(cursor, span, dept, operation, dataset_id, batch_date, env, themes=themes)
         except Exception as error:
             try:
                 connection.rollback()
@@ -87,7 +89,7 @@ def _report(env, batch):
         os.close(directory)
 
 
-def _aggregate(cursor, span, dept, operation, dataset_id, batch_date, env):
+def _aggregate(cursor, span, dept, operation, dataset_id, batch_date, env, *, themes=()):
     try:
         dataset, batch, _ = build._lock_inputs(cursor, dataset_id)
         if batch_date is not None and batch_date != batch:
@@ -109,6 +111,25 @@ def _aggregate(cursor, span, dept, operation, dataset_id, batch_date, env):
         if cursor.fetchone() is None:
             raise OdsError("N9_UNKNOWN_DEPARTMENT")
 
+    run = identity["build_run_id"]
+    batch_day = calendar_date.fromisoformat(batch)
+    row_counts = {}
+    summary = dict(dataset_id=dataset, batch_date=batch, source_build_run_id=run, start_date=start, end_date=end,
+                   dept_code=dept, row_counts=row_counts, status="PASS")
+    if operation != "themes_only":
+        counts, state = _outpatient_write(cursor, dataset, batch_day, run, start, end, dept, operation)
+        row_counts.update(counts)
+        summary["ads_status"] = state
+    if themes:
+        new_counts, states = aggregate_themes.publish(cursor, themes, dataset, batch_day, run, start, end)
+        row_counts.update(new_counts)
+        summary["theme_states"] = states
+    if _report(env, batch) != report:
+        raise OdsError("N9_SOURCE_STALE")
+    return summary
+
+
+def _outpatient_write(cursor, dataset, batch_day, run, start, end, dept, operation):
     cursor.execute(
         "SELECT table_name, engine FROM information_schema.tables "
         "WHERE table_schema=DATABASE() AND table_name IN (%s, %s)", (DWS, ADS),
@@ -131,8 +152,6 @@ def _aggregate(cursor, span, dept, operation, dataset_id, batch_date, env):
         "AND visit_type='OUTPATIENT'" + dept_filter + " GROUP BY visit_date, dept_code ORDER BY visit_date, dept_code",
         bound,
     )
-    run = identity["build_run_id"]
-    batch_day = calendar_date.fromisoformat(batch)
     rows = [(dataset, day, department, batch_day, run, count, samples, fee, reason)
             for day, department, count, samples, fee, reason in cursor.fetchall()]
     columns = ", ".join(COLUMNS)
@@ -145,10 +164,7 @@ def _aggregate(cursor, span, dept, operation, dataset_id, batch_date, env):
     ads_rows = [] if operation == "daily" else rows
     _replace_rows(cursor, DWS, where, bound, [(*row, state) for row in rows])
     _replace_rows(cursor, ADS, where, bound, ads_rows)
-    if _report(env, batch) != report:
-        raise OdsError("N9_SOURCE_STALE")
-    return dict(dataset_id=dataset, batch_date=batch, source_build_run_id=run, start_date=start, end_date=end,
-                dept_code=dept, row_counts={DWS: len(rows), ADS: len(ads_rows)}, ads_status=state, status="PASS")
+    return {DWS: len(rows), ADS: len(ads_rows)}, state
 
 
 def _replace_rows(cursor, table, where, bound, rows):

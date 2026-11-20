@@ -27,7 +27,7 @@ DWS, ADS = "dws_dept_daily", "ads_outpatient_theme"
     ("rerun", (("2025-1-01", "2025-01-03"),)),
     ("build_dws_daily", (" ", DAY)),
     ("build_dws_daily", (None, None)),
-    ("build_theme_marts", ("income",)),
+    ("build_theme_marts", ("unknown",)),
 ])
 def test_bad_request_before_connection(function, args, monkeypatch):
     def unexpected_connection():
