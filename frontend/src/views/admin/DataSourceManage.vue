@@ -2,6 +2,7 @@
 import { computed, onMounted, ref, shallowRef } from 'vue'
 import { useManagementRequest } from '../../api/admin.mjs'
 import { useSession } from '../../api/session.mjs'
+import RegistryEditor from './RegistryEditor.vue'
 
 const request = useManagementRequest('ops')
 const session = useSession()
@@ -95,5 +96,6 @@ onMounted(load)
       </div>
       <p v-else-if="!error">暂无数据源。</p>
     </section>
+    <RegistryEditor v-if="canCheck" :disabled="checking || Boolean(selected)" @saved="load" />
   </main>
 </template>

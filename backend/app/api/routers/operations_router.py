@@ -4,7 +4,7 @@ import os
 from typing import Annotated, Generic, Literal, TypeVar
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, StringConstraints
 
 from app.api.routers.auth_router import Admin, _current_admin
 from app.core.auth_store import Account
@@ -12,6 +12,7 @@ from app.core.deps import require_role
 from app.core.security import unauthorized
 from app import operations
 from etl.config import source_config as sources
+from etl.scheduler import scheduler
 
 router = APIRouter(prefix="/api/ops", tags=["数据源与任务"])
 Reader = Annotated[Account, Depends(require_role(("admin", "analyst")))]
@@ -25,6 +26,32 @@ class Result(BaseModel, Generic[Payload]):
     code: Literal[0]
     msg: str
     data: Payload
+
+
+class Registration(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    dataset_id: Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")]
+    batch_date: Annotated[str, StringConstraints(pattern=r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")]
+    expected_version: Annotated[str, StringConstraints(pattern=r"^[a-f0-9]{64}$")]
+
+
+class RegisteredBatch(BaseModel):
+    dataset_id: str
+    batch_date: str
+    sources: int
+
+
+class RegistrationState(BaseModel):
+    enabled: bool
+    version: str
+    batches: list[RegisteredBatch]
+
+
+class RegistrationReceipt(BaseModel):
+    changed: bool
+    version: str
+    dataset_id: str
+    batch_date: str
 
 
 class FileCheck(BaseModel):
@@ -77,9 +104,9 @@ def _reply(response, data):
     return {"code": 0, "msg": "ok", "data": data}
 
 
-def _admit(request):
+def _admit(request, feature="OPS_MANUAL_RUN_ENABLED"):
     try:
-        return (os.environ.get("OPS_MANUAL_RUN_ENABLED") == "1"
+        return (os.environ.get(feature) == "1"
                 and request.client is not None and ip_address(request.client.host).is_loopback)
     except ValueError:
         return False
@@ -109,6 +136,47 @@ def source_list(actor: Reader, response: Response):
     except sources.OdsError:
         raise HTTPException(503, "Source registry unavailable") from None
     return _reply(response, data)
+
+
+@router.get("/sources/registration", response_model=Result[RegistrationState], responses=ERRORS,
+            summary="读取数据源登记版本与变更权限")
+def registration_status(actor: Admin, request: Request, response: Response):
+    try:
+        data = operations.registration_state()
+    except sources.OdsError:
+        raise HTTPException(503, "Source registry unavailable") from None
+    return _reply(response, {**data, "enabled": _admit(request, "OPS_REGISTRY_WRITE_ENABLED")})
+
+
+@router.put("/sources/registration", response_model=Result[RegistrationReceipt],
+            responses={**ERRORS, 409: {"description": "登记已变化或采集正在运行"},
+                       422: {"description": "批次或六类登记文件不符合采集合同"}},
+            summary="核对六类文件后原子登记整个数据批次")
+def register_batch(body: Registration, actor: Admin, request: Request, response: Response):
+    if not _admit(request, "OPS_REGISTRY_WRITE_ENABLED"):
+        raise HTTPException(403, "Registry changes require explicit local enablement")
+    try:
+        sources.validate_batch(body.batch_date)
+    except sources.OdsError:
+        raise HTTPException(422, "Invalid batch date") from None
+    try:
+        outcome, version = operations.switch_registration(
+            actor, body.dataset_id, body.batch_date, body.expected_version, _current_admin,
+        )
+    except scheduler.EtlError as error:
+        if error.code == "ETL_RUN_LOCKED":
+            raise HTTPException(409, "Another ODS run holds the scheduler lock") from None
+        raise HTTPException(503, "Registry lock unavailable") from None
+    except sources.OdsError:
+        raise HTTPException(503, "Source registry or audit unavailable") from None
+    if outcome == "STALE":
+        raise HTTPException(409, "Source registry changed; reload before switching")
+    if outcome == "FILE_CHECK_FAILED":
+        raise HTTPException(422, "Six validated source files are required")
+    if outcome == "UNAUTHORIZED":
+        raise unauthorized()
+    return _reply(response, {"changed": outcome == "CHANGED", "version": version,
+                            "dataset_id": body.dataset_id, "batch_date": body.batch_date})
 
 
 @router.post("/sources/{name}/check", response_model=Result[CheckReceipt],

@@ -13,8 +13,8 @@ from starlette.staticfiles import StaticFiles
 from app.main import create_app
 
 
-def run_admin_browser(root, names, password, *, scenario="admin"):
-    assert scenario in {"admin", "operations"}
+def run_admin_browser(root, names, password, *, scenario="admin", scenario_env=None):
+    assert scenario in {"admin", "operations", "registration"}
     app = create_app()
     dist = root / "frontend" / "dist"
     assert (dist / "index.html").is_file(), "Build frontend before testing admin browser routes"
@@ -30,7 +30,7 @@ def run_admin_browser(root, names, password, *, scenario="admin"):
 
     app.mount("/", StaticFiles(directory=dist, html=True))
     env = {**os.environ, "MOPS_BROWSER_PASSWORD": password,
-           **{f"MOPS_BROWSER_{role.upper()}": name for role, name in names.items()}}
+           **{f"MOPS_BROWSER_{role.upper()}": name for role, name in names.items()}, **(scenario_env or {})}
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
