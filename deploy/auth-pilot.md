@@ -33,6 +33,23 @@ PY
 
 回刷前后按日期、科室核对宽表与 ADS 人次，并比较范围外的 DWS 和 ADS。重复运行同一区间时，汇总键和值应一致。
 
+## 定时采集与失败恢复
+
+在隔离认证环境中，从项目根目录在前台启动每日采集。默认时间为 Asia/Shanghai 02:00。需要在短时试运行中观察触发时，由容器内的回环管理入口配置下一时段，确认配置版本生效。通过网关可以查看调度配置，修改请求返回 403。
+
+```sh
+PYTHONPATH=backend python -m etl.jobs.run_all --env test --schedule --managed-schedule
+```
+
+定时任务采集上海时区的前一日。核对任务页的终态、六源目标日行数和当日派发记录。缺文件时任务页会显示失败代码。恢复文件后，把 `MOPS_REPLAY_DATE` 设为该次任务应采集的日期，再显式重跑一天。之后确认任务页显示新运行成功，并核对六源写入。
+
+```sh
+PYTHONPATH=backend python -m etl.jobs.run_all --env test --through extract \
+  --start "$MOPS_REPLAY_DATE" --end "$MOPS_REPLAY_DATE"
+```
+
+在两个独立临时库验证了正常触发、缺件失败、恢复补跑和同日自动派发防重。此处核验的恢复范围为 ODS，宽表与集市按上节继续发布和对账。
+
 ## 验收记录
 
 | 验证 | 结果或记录项 |
