@@ -7,6 +7,8 @@ from io import BytesIO
 import json
 from math import ceil
 import socket
+import subprocess
+import sys
 from threading import Barrier, Event, Thread
 from typing import Callable
 from time import monotonic, sleep
@@ -123,24 +125,24 @@ def _percentile(samples, percentile):
     return round(samples[ceil(len(samples) * percentile / 100) - 1], 2)
 
 
-def rehearse(app, analyst, department, truth, build, dept, other, empty_day, audit_counts, *, seconds):
-    cases = _cases(analyst, department, truth, build, dept, other, empty_day)
-    workers = 50
+def _request(client, case, *, record=False):
+    headers = {**case.headers, "x-rehearsal-case": case.name} if record else case.headers
+    started = monotonic()
+    try:
+        response = client.request(case.method, case.path, headers=headers, **case.options)
+        elapsed = (monotonic() - started) * 1000
+        if response.status_code != case.status:
+            return elapsed, f"unexpected_http_{response.status_code}"
+        case.validate(response)
+    except Exception as error:
+        return (monotonic() - started) * 1000, type(error).__name__
+    return elapsed, None
+
+
+def _drive(url, cases, seconds, workers):
     ready = Barrier(workers + 1)
     begin = Event()
     deadline = 0
-
-    def request(client, case):
-        started = monotonic()
-        try:
-            response = client.request(case.method, case.path, headers=case.headers, **case.options)
-            elapsed = (monotonic() - started) * 1000
-            if response.status_code != case.status:
-                return elapsed, f"unexpected_http_{response.status_code}"
-            case.validate(response)
-        except Exception as error:
-            return (monotonic() - started) * 1000, type(error).__name__
-        return elapsed, None
 
     def work(index):
         samples = {case.name: [] for case in cases}
@@ -150,47 +152,109 @@ def rehearse(app, analyst, department, truth, build, dept, other, empty_day, aud
             if begin.wait(timeout=30):
                 while monotonic() < deadline:
                     case = cases[index % len(cases)]
-                    elapsed, error = request(client, case)
+                    elapsed, error = _request(client, case, record=True)
                     samples[case.name].append(elapsed)
                     if error is not None:
                         errors[(case.name, error)] += 1
                     index += 1
         return samples, errors
 
-    with _server(app) as url:
+    all_samples = {case.name: [] for case in cases}
+    errors = Counter()
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        pending = [pool.submit(work, index) for index in range(workers)]
+        ready.wait(timeout=30)
+        started = monotonic()
+        deadline = started + seconds
+        begin.set()
+        for future in pending:
+            samples, failures = future.result()
+            for name, values in samples.items():
+                all_samples[name].extend(values)
+            errors.update(failures)
+    return {
+        "elapsed_seconds": round(monotonic() - started, 3),
+        "samples": all_samples,
+        "errors_by_case": {f"{name}/{reason}": count for (name, reason), count in errors.items()},
+    }
+
+
+class _TimedApp:
+    def __init__(self, app, cases):
+        self.app = app
+        self.samples = {case.name.encode("ascii"): [] for case in cases}
+
+    async def __call__(self, scope, receive, send):
+        durations = None
+        if scope["type"] == "http":
+            marker = dict(scope["headers"]).get(b"x-rehearsal-case")
+            durations = self.samples.get(marker)
+        if durations is None:
+            await self.app(scope, receive, send)
+            return
+
+        started = monotonic()
+
+        async def measured_send(message):
+            await send(message)
+            if message["type"] == "http.response.body" and not message.get("more_body", False):
+                durations.append((monotonic() - started) * 1000)
+
+        await self.app(scope, receive, measured_send)
+
+
+def rehearse(app, analyst, department, truth, build, dept, other, empty_day, audit_counts, *, seconds):
+    cases = _cases(analyst, department, truth, build, dept, other, empty_day)
+    workers = 50
+    payload = {
+        "analyst": analyst, "department": department,
+        "truth": [[day, unit, count] for (day, unit), count in truth.items()],
+        "build": build, "dept": dept, "other": other, "empty_day": empty_day,
+        "seconds": seconds, "workers": workers,
+    }
+    server_app = _TimedApp(app, cases)
+    with _server(server_app) as url:
         with httpx.Client(base_url=url, timeout=12, trust_env=False) as warm:
             for case in cases:
-                assert request(warm, case)[1] is None, f"Warm-up verification failed for {case.name}"
+                assert _request(warm, case)[1] is None, f"Warm-up verification failed for {case.name}"
         before = audit_counts()
-        all_samples = {case.name: [] for case in cases}
-        errors = Counter()
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            pending = [pool.submit(work, index) for index in range(workers)]
-            ready.wait(timeout=30)
-            started = monotonic()
-            deadline = started + seconds
-            begin.set()
-            for future in pending:
-                samples, failures = future.result()
-                for name, values in samples.items():
-                    all_samples[name].extend(values)
-                errors.update(failures)
-        elapsed = monotonic() - started
-    daily = {
-        case.name: {
-            "expected_http": case.status, "requests": len(all_samples[case.name]),
-            **{f"p{p}_ms": _percentile(all_samples[case.name], p) for p in (50, 95, 99)},
-        } for case in cases
-    }
+        load = subprocess.run(
+            [sys.executable, __file__],
+            input=json.dumps({**payload, "url": url}), text=True, capture_output=True, check=False,
+            env={"PYTHONDONTWRITEBYTECODE": "1"}, timeout=seconds + 60,
+        )
+        assert load.returncode == 0, f"Isolated load process exited {load.returncode}"
+        client_result = json.loads(load.stdout)
+    daily = {}
     expected_audit = Counter()
     for case in cases:
+        client_samples = client_result["samples"][case.name]
+        server_samples = server_app.samples[case.name.encode("ascii")]
+        daily[case.name] = {
+            "expected_http": case.status, "client_requests": len(client_samples), "server_requests": len(server_samples),
+            **{f"client_p{p}_ms": _percentile(client_samples, p) for p in (50, 95, 99)},
+            **{f"server_p{p}_ms": _percentile(server_samples, p) for p in (50, 95, 99)},
+        }
         if case.audit:
-            expected_audit[case.audit] += daily[case.name]["requests"]
+            expected_audit[case.audit] += len(client_samples)
     audit_delta = audit_counts() - before
-    result = {"concurrency": workers, "window_seconds": seconds, "elapsed_seconds": round(elapsed, 3),
-              "requests": sum(len(values) for values in all_samples.values()), "errors": sum(errors.values()),
-              "errors_by_case": {f"{name}/{reason}": count for (name, reason), count in errors.items()},
-              "audit_rows": sum(audit_delta.values()), "audit_match": audit_delta == expected_audit, "cases": daily}
-    print("MIXED_REHEARSAL_RESULT " + json.dumps(result, sort_keys=True), flush=True)
-    assert all(all_samples.values()), "At least one route received no requests"
-    assert not errors and audit_delta == expected_audit, "Mixed HTTP rehearsal did not reconcile"
+    request_match = all(0 < row["client_requests"] == row["server_requests"] for row in daily.values())
+    result = {
+        "concurrency": workers, "window_seconds": seconds, "elapsed_seconds": client_result["elapsed_seconds"],
+        "requests": sum(row["client_requests"] for row in daily.values()),
+        "errors": sum(client_result["errors_by_case"].values()),
+        "errors_by_case": client_result["errors_by_case"], "request_match": request_match,
+        "audit_rows": sum(audit_delta.values()), "audit_match": audit_delta == expected_audit, "cases": daily,
+    }
+    print("SPLIT_LOAD_RESULT " + json.dumps(result, sort_keys=True), flush=True)
+    assert request_match and not result["errors"] and result["audit_match"], "Split HTTP rehearsal did not reconcile"
+
+
+if __name__ == "__main__":
+    config = json.load(sys.stdin)
+    cases = _cases(
+        config["analyst"], config["department"],
+        {(day, unit): count for day, unit, count in config["truth"]},
+        config["build"], config["dept"], config["other"], config["empty_day"],
+    )
+    print(json.dumps(_drive(config["url"], cases, config["seconds"], config["workers"])))
