@@ -66,6 +66,7 @@ onBeforeUnmount(loader.dispose)
       <div class="brand"><span class="brand-mark" aria-hidden="true">+</span><span>MOPS <span class="brand-divider">/</span> 医疗运营工作台</span></div>
       <span class="demo-badge"><span aria-hidden="true" class="status-dot"></span>{{ authenticated ? '门诊日汇总集市' : preview ? '节点 8 宽表 · 本地只读预览' : '课程样例数据 · 本地演示' }}</span>
       <div v-if="authenticated" class="account-actions">
+        <RouterLink :to="{ name: 'reports' }">门诊报表</RouterLink>
         <span>{{ user?.username }}</span>
         <button type="button" class="button secondary" @click="leave">退出登录</button>
       </div>

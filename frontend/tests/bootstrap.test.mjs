@@ -19,6 +19,7 @@ test('bootstrap registers Pinia and router before mounting the unchanged dashboa
   runInNewContext(source.replace(/^import .+$/gm, ''), {
     App: dashboard,
     Login: login,
+    ReportCenter: { name: 'ReportCenter', render: () => null },
     useSession: () => session,
     createApp: component => {
       root = component
@@ -36,10 +37,10 @@ test('bootstrap registers Pinia and router before mounting the unchanged dashboa
   assert.equal(mountedAt, '#app')
   assert.equal(root.render().type, RouterView)
   const router = app.config.globalProperties.$router
-  assert.deepEqual(router.getRoutes().map(route => route.path).sort(), ['/', '/login', '/outpatient'])
+  assert.deepEqual(router.getRoutes().map(route => route.path).sort(), ['/', '/login', '/outpatient', '/reports'])
   await router.push('/')
   assert.equal(router.currentRoute.value.matched[0].components.default, dashboard)
-  await router.push('/outpatient')
+  await router.push('/reports')
   assert.equal(router.currentRoute.value.name, 'login')
   session.current = {}
   await router.push('/outpatient')

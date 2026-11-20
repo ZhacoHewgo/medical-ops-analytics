@@ -3,6 +3,7 @@ import { createPinia } from 'pinia'
 import { createRouter, createWebHistory, RouterView } from 'vue-router'
 import App from './App.vue'
 import Login from './LoginPage.vue'
+import ReportCenter from './views/ReportCenter.vue'
 import { useSession } from './api/session.mjs'
 import './style.css'
 
@@ -13,6 +14,7 @@ const router = createRouter({
   routes: [
     { path: '/', name: 'demo', component: App },
     { path: '/login', name: 'login', component: Login },
+    { path: '/reports', name: 'reports', component: ReportCenter, meta: { protected: true } },
     { path: '/outpatient', name: 'outpatient', component: App, props: { authenticated: true }, meta: { protected: true } },
   ],
 })
