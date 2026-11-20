@@ -17,3 +17,19 @@ CREATE TABLE IF NOT EXISTS auth_audit (
     outcome ENUM('success', 'denied') NOT NULL,
     recorded_at TIMESTAMP(6) DEFAULT CURRENT_TIMESTAMP(6) NOT NULL
 ) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS auth_admin_audit (
+    audit_id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    actor_id BIGINT UNSIGNED NOT NULL,
+    target_id BIGINT UNSIGNED NOT NULL,
+    action ENUM('create', 'update') NOT NULL,
+    previous_role ENUM('admin', 'analyst', 'department'),
+    previous_department VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin,
+    previous_enabled BOOLEAN,
+    role ENUM('admin', 'analyst', 'department') NOT NULL,
+    department VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin,
+    enabled BOOLEAN NOT NULL,
+    recorded_at TIMESTAMP(6) DEFAULT CURRENT_TIMESTAMP(6) NOT NULL,
+    KEY ix_admin_audit_target (target_id, audit_id),
+    KEY ix_admin_audit_actor (actor_id, audit_id)
+) ENGINE=InnoDB;

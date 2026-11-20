@@ -83,6 +83,7 @@ def auth_client(monkeypatch):
         audit_ids.append(cursor.lastrowid)
 
     monkeypatch.setattr(auth_router, "log_action", record_audit)
+    admin_id = None
     try:
         with sources.database_cursor("AUTH_DB_UNAVAILABLE", write=True) as cursor:
             admin_id = insert_user(cursor, names["admin"], security.hash_password(PASSWORD), "admin", None)
@@ -92,6 +93,7 @@ def auth_client(monkeypatch):
         with sources.connect_database(test_only=True) as db, db.cursor() as cursor:
             if audit_ids:
                 cursor.executemany("DELETE FROM auth_audit WHERE audit_id=%s", [(audit_id,) for audit_id in audit_ids])
+            cursor.execute("DELETE FROM auth_admin_audit WHERE actor_id=%s", (admin_id,))
             cursor.execute("DELETE FROM auth_users WHERE username IN (%s,%s,%s,%s)", (*names.values(), key))
             db.commit()
 
