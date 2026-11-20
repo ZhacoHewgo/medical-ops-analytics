@@ -10,7 +10,9 @@ use([BarChart, LineChart, AriaComponent, GridComponent, TooltipComponent, Canvas
 const props = defineProps({
   kind: { type: String, required: true },
   rows: { type: Array, required: true },
+  drillable: Boolean,
 })
+const emit = defineEmits(['select-row'])
 const container = ref(null)
 const chartError = ref(false)
 const isRanking = computed(() => props.kind === 'ranking')
@@ -41,7 +43,8 @@ function draw() {
       yAxis: ranking ? categoryAxis : countAxis,
       series: [{
         name: '门诊量', type: ranking ? 'bar' : 'line', data: values,
-        barMaxWidth: 16, showSymbol: values.length === 1, symbolSize: 8,
+        barMaxWidth: 16, showSymbol: props.drillable || values.length === 1, symbolSize: 8,
+        cursor: props.drillable ? 'pointer' : 'default',
         itemStyle: { color: ranking ? '#378caa' : '#117c80', borderRadius: ranking ? [0, 4, 4, 0] : 0 },
         lineStyle: { width: 3 }, areaStyle: ranking ? undefined : { color: '#117c80', opacity: 0.07 },
       }],
@@ -55,6 +58,12 @@ function draw() {
 onMounted(() => {
   try {
     chart = init(container.value)
+    if (props.drillable) {
+      chart.on('click', 'series', ({ dataIndex }) => {
+        const row = props.rows[dataIndex]
+        if (row) emit('select-row', row)
+      })
+    }
     observer = new ResizeObserver(() => chart?.resize())
     observer.observe(container.value)
     draw()

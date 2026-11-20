@@ -135,3 +135,16 @@ tbody th { max-width: 160px; }
 .login-panel h1 { font-size: 1.45rem; }
 .login-panel [role="alert"] { color: #9a3028; }
 .account-actions { display: flex; gap: 12px; align-items: center; color: var(--muted); font-size: .82rem; overflow-wrap: anywhere; }
+.report-filters { grid-template-columns: repeat(4, minmax(0, 1fr)) auto; }
+.report-result { margin-top: 20px; }
+.report-heading { flex-wrap: wrap; }
+.report-comparison, .report-pagination { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; color: var(--muted); font-size: .82rem; }
+.report-comparison select { width: auto; }
+.report-pagination { margin-top: 12px; }
+.report-error { color: #9a3028; padding-bottom: 12px; }
+@media (max-width: 840px) {
+  .report-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 420px) {
+  .report-filters { grid-template-columns: minmax(0, 1fr); }
+}
