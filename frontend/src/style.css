@@ -130,3 +130,8 @@ tbody th { max-width: 160px; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
 }
+
+.login-panel { display: grid; gap: 18px; max-width: 420px; margin: 0 auto; padding: 24px; }
+.login-panel h1 { font-size: 1.45rem; }
+.login-panel [role="alert"] { color: #9a3028; }
+.account-actions { display: flex; gap: 12px; align-items: center; color: var(--muted); font-size: .82rem; overflow-wrap: anywhere; }
