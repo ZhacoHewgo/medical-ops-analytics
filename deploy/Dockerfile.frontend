@@ -1,0 +1,9 @@
+FROM public.ecr.aws/docker/library/node@sha256:e9f565d32859f0cbfb52125eafe8be39390f24dac302dc3cdf566e8ba3ab21ee AS build
+WORKDIR /src
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY frontend/ ./
+RUN npm run build
+
+FROM public.ecr.aws/docker/library/nginx@sha256:3bc3836dc0be3b811f238210360bf8e7ca8a2d0effdae46160bf1f3578710051
+COPY --from=build /src/dist/ /usr/share/nginx/html/
