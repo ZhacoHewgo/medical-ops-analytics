@@ -16,6 +16,7 @@ from etl.config.source_config import OdsError
 async def http_error(request, error):
     return JSONResponse(
         status_code=error.status_code,
+        headers=error.headers,
         content={"code": error.status_code, "msg": str(error.detail), "data": None},
     )
 
@@ -109,6 +110,9 @@ def create_app() -> FastAPI:
         responses={403: {"description": "仅本机预览"}, 422: {"description": "筛选无效"},
                    503: {"description": "认证构建不可用或已过期"}},
     )
+    if get_settings().auth_enabled:
+        from app.api.routers.auth_router import router
+        application.include_router(router)
     return application
 
 
