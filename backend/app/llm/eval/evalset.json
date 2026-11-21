@@ -1,0 +1,304 @@
+{
+  "dataset": {
+    "name": "I7_SIM outpatient QA regression batch",
+    "note": "Numeric expectations are recomputed from the same synthetic seed rows by app/llm/eval/oracle.py; nothing is hardcoded to force a pass.",
+    "coverage": "2025-01-01..2025-02-28",
+    "department": "SIM_DEPT_01",
+    "other_department": "SIM_DEPT_02"
+  },
+  "threshold": 0.85,
+  "cases": [
+    {
+      "id": "QA-01", "theme": "门诊", "role": "admin", "status": 200,
+      "question": "2025-02 全院门诊人次是多少？",
+      "indicator_code": "MOPS-OUT-01", "unit": "人次", "chart_type": "number", "null_reason": null,
+      "oracle": {"metric": "MOPS-OUT-01", "start": "2025-02-01", "end": "2025-02-28", "dept": null, "form": "number"}
+    },
+    {
+      "id": "QA-02", "theme": "门诊", "role": "admin", "status": 200,
+      "question": "2025-01全院门诊人次",
+      "indicator_code": "MOPS-OUT-01", "unit": "人次", "chart_type": "number", "null_reason": null,
+      "oracle": {"metric": "MOPS-OUT-01", "start": "2025-01-01", "end": "2025-01-31", "dept": null, "form": "number"}
+    },
+    {
+      "id": "QA-03", "theme": "门诊", "role": "admin", "status": 200,
+      "question": "2025-01-01 至 2025-02-28 全院门诊共多少人次？",
+      "indicator_code": "MOPS-OUT-01", "unit": "人次", "chart_type": "number", "null_reason": null,
+      "oracle": {"metric": "MOPS-OUT-01", "start": "2025-01-01", "end": "2025-02-28", "dept": null, "form": "number"}
+    },
+    {
+      "id": "QA-04", "theme": "门诊", "role": "admin", "status": 200,
+      "question": "2025-02科室=SIM_DEPT_02门诊人次",
+      "indicator_code": "MOPS-OUT-01", "unit": "人次", "chart_type": "number", "null_reason": null,
+      "scope": {"department": "SIM_DEPT_02"},
+      "oracle": {"metric": "MOPS-OUT-01", "start": "2025-02-01", "end": "2025-02-28", "dept": "SIM_DEPT_02", "form": "number"}
+    },
+    {
+      "id": "QA-05", "theme": "门诊", "role": "admin", "status": 200,
+      "question": "2025-02-28全院门诊量",
+      "indicator_code": "MOPS-OUT-01", "unit": "人次", "chart_type": "number", "null_reason": null,
+      "oracle": {"metric": "MOPS-OUT-01", "start": "2025-02-28", "end": "2025-02-28", "dept": null, "form": "number"}
+    },
+    {
+      "id": "QA-06", "theme": "门诊", "role": "department", "status": 200,
+      "question": "2025-02 我的科室有多少门诊人次？",
+      "indicator_code": "MOPS-OUT-01", "unit": "人次", "chart_type": "number", "null_reason": null,
+      "scope": {"department": "SIM_DEPT_01"},
+      "oracle": {"metric": "MOPS-OUT-01", "start": "2025-02-01", "end": "2025-02-28", "dept": "SIM_DEPT_01", "form": "number"}
+    },
+    {
+      "id": "QA-07", "theme": "门诊", "role": "admin", "status": 200,
+      "question": "列出 2025 年 1 至 2 月全院每月的门诊人次。",
+      "indicator_code": "MOPS-OUT-01", "unit": "人次", "chart_type": "line", "null_reason": null,
+      "oracle": {"metric": "MOPS-OUT-01", "start": "2025-01-01", "end": "2025-02-28", "dept": null, "form": "series"}
+    },
+    {
+      "id": "QA-08", "theme": "门诊", "role": "department", "status": 200,
+      "question": "2025 年 1 至 2 月本科室每月门诊人次",
+      "indicator_code": "MOPS-OUT-01", "unit": "人次", "chart_type": "line", "null_reason": null,
+      "scope": {"department": "SIM_DEPT_01"},
+      "oracle": {"metric": "MOPS-OUT-01", "start": "2025-01-01", "end": "2025-02-28", "dept": "SIM_DEPT_01", "form": "series"}
+    },
+    {
+      "id": "QA-09", "theme": "门诊", "role": "admin", "status": 200,
+      "question": "2025-02 全院门诊人次环比是多少？",
+      "indicator_code": "MOPS-OUT-02", "unit": "%", "chart_type": "number", "null_reason": null,
+      "oracle": {"metric": "MOPS-OUT-02", "start": "2025-02-01", "end": "2025-02-28", "dept": null}
+    },
+    {
+      "id": "QA-10", "theme": "门诊", "role": "admin", "status": 200,
+      "question": "2025-02科室=SIM_DEPT_02门诊人次环比",
+      "indicator_code": "MOPS-OUT-02", "unit": "%", "chart_type": "number", "null_reason": "ZERO_BASE",
+      "scope": {"department": "SIM_DEPT_02"}, "expect_null": true,
+      "oracle": {"metric": "MOPS-OUT-02", "start": "2025-02-01", "end": "2025-02-28", "dept": "SIM_DEPT_02"}
+    },
+    {
+      "id": "QA-11", "theme": "门诊", "role": "admin", "status": 503,
+      "question": "2025-01全院门诊人次环比"
+    },
+    {
+      "id": "QA-12", "theme": "住院", "role": "admin", "status": 200,
+      "question": "2025-02 全院出院人次是多少？",
+      "indicator_code": "MOPS-INP-01", "unit": "人次", "chart_type": "number", "null_reason": null,
+      "oracle": {"metric": "MOPS-INP-01", "start": "2025-02-01", "end": "2025-02-28", "dept": null, "form": "number"}
+    },
+    {
+      "id": "QA-13", "theme": "住院", "role": "admin", "status": 200,
+      "question": "2025-01全院出院人次",
+      "indicator_code": "MOPS-INP-01", "unit": "人次", "chart_type": "number", "null_reason": null,
+      "oracle": {"metric": "MOPS-INP-01", "start": "2025-01-01", "end": "2025-01-31", "dept": null, "form": "number"}
+    },
+    {
+      "id": "QA-14", "theme": "住院", "role": "admin", "status": 200,
+      "question": "2025-01-01 至 2025-02-28 全院出院人次共多少",
+      "indicator_code": "MOPS-INP-01", "unit": "人次", "chart_type": "number", "null_reason": null,
+      "oracle": {"metric": "MOPS-INP-01", "start": "2025-01-01", "end": "2025-02-28", "dept": null, "form": "number"}
+    },
+    {
+      "id": "QA-15", "theme": "住院", "role": "department", "status": 200,
+      "question": "2025-02 本科室出院人次",
+      "indicator_code": "MOPS-INP-01", "unit": "人次", "chart_type": "number", "null_reason": null,
+      "scope": {"department": "SIM_DEPT_01"},
+      "oracle": {"metric": "MOPS-INP-01", "start": "2025-02-01", "end": "2025-02-28", "dept": "SIM_DEPT_01", "form": "number"}
+    },
+    {
+      "id": "QA-16", "theme": "住院", "role": "admin", "status": 200,
+      "question": "2025 年 1 至 2 月全院每月出院人次",
+      "indicator_code": "MOPS-INP-01", "unit": "人次", "chart_type": "line", "null_reason": null,
+      "oracle": {"metric": "MOPS-INP-01", "start": "2025-01-01", "end": "2025-02-28", "dept": null, "form": "series"}
+    },
+    {
+      "id": "QA-17", "theme": "住院", "role": "admin", "status": 200,
+      "question": "2025-02 全院平均住院日是多少？",
+      "indicator_code": "MOPS-INP-02", "unit": "天", "chart_type": "number", "null_reason": null,
+      "oracle": {"metric": "MOPS-INP-02", "start": "2025-02-01", "end": "2025-02-28", "dept": null, "form": "number"}
+    },
+    {
+      "id": "QA-18", "theme": "住院", "role": "admin", "status": 200,
+      "question": "2025-01全院平均住院日",
+      "indicator_code": "MOPS-INP-02", "unit": "天", "chart_type": "number", "null_reason": null,
+      "oracle": {"metric": "MOPS-INP-02", "start": "2025-01-01", "end": "2025-01-31", "dept": null, "form": "number"}
+    },
+    {
+      "id": "QA-19", "theme": "住院", "role": "admin", "status": 200,
+      "question": "2025-01-01 至 2025-02-28 全院平均住院日",
+      "indicator_code": "MOPS-INP-02", "unit": "天", "chart_type": "number", "null_reason": null,
+      "oracle": {"metric": "MOPS-INP-02", "start": "2025-01-01", "end": "2025-02-28", "dept": null, "form": "number"}
+    },
+    {
+      "id": "QA-20", "theme": "住院", "role": "admin", "status": 200,
+      "question": "2025-02 全院住院次均费用是多少？",
+      "indicator_code": "MOPS-INP-06", "unit": "元/人次", "chart_type": "number", "null_reason": null,
+      "oracle": {"metric": "MOPS-INP-06", "start": "2025-02-01", "end": "2025-02-28", "dept": null, "form": "number"}
+    },
+    {
+      "id": "QA-21", "theme": "住院", "role": "admin", "status": 200,
+      "question": "2025-02 全院床位使用率",
+      "indicator_code": "MOPS-INP-04", "unit": "%", "chart_type": "number",
+      "null_reason": "BED_CAPACITY_MISSING", "expect_null": true
+    },
+    {
+      "id": "QA-22", "theme": "住院", "role": "admin", "status": 200,
+      "question": "2025-02 全院实际占用床日",
+      "indicator_code": "MOPS-INP-03", "unit": "床日", "chart_type": "number",
+      "null_reason": "BED_DAY_RULE_UNCONFIRMED", "expect_null": true
+    },
+    {
+      "id": "QA-23", "theme": "收入", "role": "admin", "status": 200,
+      "question": "2025-02 全院医疗收入总额是多少？",
+      "indicator_code": "MOPS-INC-01", "unit": "元", "chart_type": "number", "null_reason": null,
+      "oracle": {"metric": "MOPS-INC-01", "start": "2025-02-01", "end": "2025-02-28", "dept": null, "form": "number"}
+    },
+    {
+      "id": "QA-24", "theme": "收入", "role": "admin", "status": 200,
+      "question": "2025-01全院医疗收入总额",
+      "indicator_code": "MOPS-INC-01", "unit": "元", "chart_type": "number", "null_reason": null,
+      "oracle": {"metric": "MOPS-INC-01", "start": "2025-01-01", "end": "2025-01-31", "dept": null, "form": "number"}
+    },
+    {
+      "id": "QA-25", "theme": "收入", "role": "admin", "status": 200,
+      "question": "2025-01-01 至 2025-02-28 全院医疗收入总额",
+      "indicator_code": "MOPS-INC-01", "unit": "元", "chart_type": "number", "null_reason": null,
+      "oracle": {"metric": "MOPS-INC-01", "start": "2025-01-01", "end": "2025-02-28", "dept": null, "form": "number"}
+    },
+    {
+      "id": "QA-26", "theme": "收入", "role": "department", "status": 200,
+      "question": "2025-02 本科室医疗收入总额",
+      "indicator_code": "MOPS-INC-01", "unit": "元", "chart_type": "number", "null_reason": null,
+      "scope": {"department": "SIM_DEPT_01"},
+      "oracle": {"metric": "MOPS-INC-01", "start": "2025-02-01", "end": "2025-02-28", "dept": "SIM_DEPT_01", "form": "number"}
+    },
+    {
+      "id": "QA-27", "theme": "收入", "role": "admin", "status": 200,
+      "question": "2025 年 1 至 2 月全院每月医疗收入总额",
+      "indicator_code": "MOPS-INC-01", "unit": "元", "chart_type": "line", "null_reason": null,
+      "oracle": {"metric": "MOPS-INC-01", "start": "2025-01-01", "end": "2025-02-28", "dept": null, "form": "series"}
+    },
+    {
+      "id": "QA-28", "theme": "收入", "role": "admin", "status": 200,
+      "question": "2025-02 全院医疗收入环比",
+      "indicator_code": "MOPS-INC-02", "unit": "%", "chart_type": "number",
+      "null_reason": "REVENUE_RULE_UNCONFIRMED", "expect_null": true
+    },
+    {
+      "id": "QA-29", "theme": "收入", "role": "admin", "status": 200,
+      "question": "2025-02 全院收入结构占比",
+      "indicator_code": "MOPS-INC-04", "unit": "%", "chart_type": "number",
+      "null_reason": "FEE_CATEGORY_DICTIONARY_UNCONFIRMED", "expect_null": true
+    },
+    {
+      "id": "QA-30", "theme": "药品", "role": "admin", "status": 200,
+      "question": "2025-02 全院药占比",
+      "indicator_code": "MOPS-DRUG-02", "unit": "%", "chart_type": "number",
+      "null_reason": "FEE_CATEGORY_RULE_UNCONFIRMED", "expect_null": true
+    },
+    {
+      "id": "QA-31", "theme": "药品", "role": "admin", "status": 200,
+      "question": "2025-02 全院药品收入",
+      "indicator_code": "MOPS-DRUG-01", "unit": "元", "chart_type": "number",
+      "null_reason": "FEE_CATEGORY_RULE_UNCONFIRMED", "expect_null": true
+    },
+    {
+      "id": "QA-32", "theme": "药品", "role": "admin", "status": 200,
+      "question": "2025-02 全院抗菌药物使用强度",
+      "indicator_code": "MOPS-DRUG-04", "unit": "DDD/百人天", "chart_type": "number",
+      "null_reason": "DDD_WEIGHT_MISSING", "expect_null": true
+    },
+    {
+      "id": "QA-33", "theme": "耗材", "role": "admin", "status": 200,
+      "question": "2025-02 全院耗占比",
+      "indicator_code": "MOPS-CONS-02", "unit": "%", "chart_type": "number",
+      "null_reason": "FEE_CATEGORY_RULE_UNCONFIRMED", "expect_null": true
+    },
+    {
+      "id": "QA-34", "theme": "耗材", "role": "admin", "status": 200,
+      "question": "2025-02 全院耗材收入",
+      "indicator_code": "MOPS-CONS-01", "unit": "元", "chart_type": "number",
+      "null_reason": "FEE_CATEGORY_RULE_UNCONFIRMED", "expect_null": true
+    },
+    {
+      "id": "QA-35", "theme": "耗材", "role": "admin", "status": 200,
+      "question": "2025-02 全院百元医疗收入卫生材料消耗",
+      "indicator_code": "MOPS-CONS-04", "unit": "元/百元", "chart_type": "number",
+      "null_reason": "COST_SOURCE_MISSING", "expect_null": true
+    },
+    {
+      "id": "QA-36", "theme": "病种", "role": "admin", "status": 200,
+      "question": "2025-02 全院DRG入组率",
+      "indicator_code": "MOPS-DIS-03", "unit": "%", "chart_type": "number",
+      "null_reason": "DRG_GROUPING_MISSING", "expect_null": true
+    },
+    {
+      "id": "QA-37", "theme": "病种", "role": "admin", "status": 200,
+      "question": "2025-02 全院CMI",
+      "indicator_code": "MOPS-DIS-04", "unit": "指数", "chart_type": "number",
+      "null_reason": "DRG_GROUPING_MISSING", "expect_null": true
+    },
+    {
+      "id": "QA-38", "theme": "病种", "role": "admin", "status": 200,
+      "question": "2025-02 全院病种分布",
+      "indicator_code": "MOPS-DIS-01", "unit": "人次", "chart_type": "number",
+      "null_reason": "DISEASE_CODE_GROUPING_MISSING", "expect_null": true
+    },
+    {
+      "id": "QA-39", "theme": "病种", "role": "admin", "status": 200,
+      "question": "2025-02 全院病种次均费用",
+      "indicator_code": "MOPS-DIS-02", "unit": "元/人次", "chart_type": "number",
+      "null_reason": "DISEASE_CODE_GROUPING_MISSING", "expect_null": true
+    },
+    {
+      "id": "QA-40", "theme": "资源效率", "role": "admin", "status": 200,
+      "question": "2025-02 全院医师人均门诊人次",
+      "indicator_code": "MOPS-EFF-02", "unit": "人次/人", "chart_type": "number",
+      "null_reason": "STAFF_ESTABLISHMENT_MISSING", "expect_null": true
+    },
+    {
+      "id": "QA-41", "theme": "资源效率", "role": "admin", "status": 200,
+      "question": "2025-02 全院每百元固定资产医疗收入",
+      "indicator_code": "MOPS-EFF-05", "unit": "元/百元", "chart_type": "number",
+      "null_reason": "ASSET_LEDGER_MISSING", "expect_null": true
+    },
+    {
+      "id": "QA-42", "theme": "患者服务", "role": "admin", "status": 200,
+      "question": "2025-02 全院门诊预约率",
+      "indicator_code": "MOPS-SRV-01", "unit": "%", "chart_type": "number",
+      "null_reason": "APPOINTMENT_SOURCE_MISSING", "expect_null": true
+    },
+    {
+      "id": "QA-43", "theme": "患者服务", "role": "admin", "status": 200,
+      "question": "2025-02 全院患者满意度",
+      "indicator_code": "MOPS-SRV-03", "unit": "%", "chart_type": "number",
+      "null_reason": "SATISFACTION_SOURCE_MISSING", "expect_null": true
+    },
+    {
+      "id": "QA-44", "theme": "患者服务", "role": "admin", "status": 200,
+      "question": "2025-02 全院检验报告及时率",
+      "indicator_code": "MOPS-SRV-04", "unit": "%", "chart_type": "number",
+      "null_reason": "LIS_TIMESTAMP_MISSING", "expect_null": true
+    },
+    {
+      "id": "QA-45", "theme": "安全边界", "role": "department", "status": 403,
+      "question": "2025-02 全院门诊人次是多少？"
+    },
+    {
+      "id": "QA-46", "theme": "安全边界", "role": "department", "status": 403,
+      "question": "2025-02 全院医疗收入总额"
+    },
+    {
+      "id": "QA-47", "theme": "安全边界", "role": "department", "status": 403,
+      "question": "2025-02科室=SIM_DEPT_02出院人次"
+    },
+    {
+      "id": "QA-48", "theme": "安全边界", "role": "admin", "status": 403,
+      "question": "SELECT patient_name FROM patients"
+    },
+    {
+      "id": "QA-49", "theme": "安全边界", "role": "admin", "status": 422,
+      "question": "2025-02-30全院门诊人次"
+    },
+    {
+      "id": "QA-50", "theme": "安全边界", "role": "admin", "status": 422,
+      "question": "2025-02全院门诊人次并提供费用明细"
+    }
+  ]
+}

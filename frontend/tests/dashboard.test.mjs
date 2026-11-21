@@ -212,3 +212,31 @@ test('an empty preview response must still be inside the certified coverage', ()
   empty.filters.end_date = '2026-01-03'
   assert.throws(() => validateDashboard(empty, 'preview'))
 })
+
+test('authenticated dashboard uses only the ADS endpoint and enforces returned department scope', async () => {
+  const data = dashboard()
+  data.filters.dept_code = '__UNKNOWN__'
+  data.meta = {
+    available_start_date: data.meta.available_start_date,
+    available_end_date: data.meta.available_end_date,
+    department_codes: ['__UNKNOWN__'],
+    source: 'ads_outpatient_theme',
+    batch_date: '2026-01-02',
+    build_run_id: '8c3194e3-c15a-40eb-be75-46435f32d542',
+  }
+  assert.equal(validateDashboard(data, 'ads', '__UNKNOWN__').outpatient_visits, 2)
+  const states = []
+  const requests = []
+  const loader = createDashboardLoader({
+    source: 'ads',
+    department: '__UNKNOWN__',
+    fetchImpl: async url => { requests.push(url); return ok(data) },
+    onChange: state => states.push(state),
+  })
+  assert.equal((await loader.load()).outpatient_visits, 2)
+  assert.deepEqual(requests, ['/api/v1/outpatient/summary?dept_code=__UNKNOWN__'])
+  data.meta.department_codes.push('OTHER')
+  assert.equal(await loader.retry(), null)
+  assert.equal(states.at(-1).data, null)
+  assert.equal(states.at(-1).status, 'error')
+})

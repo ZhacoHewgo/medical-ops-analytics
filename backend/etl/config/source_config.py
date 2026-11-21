@@ -3,15 +3,18 @@
 from contextlib import contextmanager
 import csv
 from datetime import date
+import json
 import logging
 import os
 from pathlib import Path
 import re
+import stat
 from urllib.parse import unquote, urlsplit
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 GENERATED_ROOT = PROJECT_ROOT / "data/generated"
+COURSE_DATASET = "course-platform-v1"
 SOURCES = {
     "his_outpatient": {
         "table": "ods_his_outpatient_visit", "path": "mock_his/his_outpatient.csv",
@@ -39,15 +42,16 @@ SOURCES = {
     },
 }
 CONFIG_FIELDS = ("kind", "file_path", "dataset_id", "etl_batch_date")
+FINANCE_SUMMARY_PREFIX = "ods-finance-summary-v1."
 LOGGER = logging.getLogger(__name__)
 
 
 class OdsError(Exception):
-    """Only internally chosen reason codes cross CLI/library boundaries."""
+    """Safe reason codes and internally generated diagnostics."""
 
-    def __init__(self, code):
+    def __init__(self, code, *, detail=None):
         self.code = code
-        super().__init__(code)
+        super().__init__(code if detail is None else f"{code}: {detail}")
 
 
 def validate_dataset(dataset):
@@ -66,8 +70,36 @@ def validate_batch(batch):
     return batch
 
 
+def _private_database_url():
+    try:
+        directory = os.open(PROJECT_ROOT / ".runtime", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            descriptor = os.open("ods-connection.json", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                                 dir_fd=directory)
+        finally:
+            os.close(directory)
+        with os.fdopen(descriptor, "rb") as stream:
+            info = os.fstat(stream.fileno())
+            if (not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o600
+                    or info.st_uid != os.geteuid() or info.st_nlink != 1):
+                raise ValueError
+            data = stream.read(4097)
+        if len(data) > 4096:
+            raise ValueError
+        settings = json.loads(data)
+        if not isinstance(settings, dict) or not isinstance(settings.get("ODS_DATABASE_URL"), str):
+            raise ValueError
+        return settings["ODS_DATABASE_URL"]
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError, RecursionError):
+        raise OdsError("ODS_DATABASE_URL_INVALID") from None
+
+
 def database_options(*, test_only=False):
-    url = os.environ.get("ODS_TEST_DATABASE_URL" if test_only else "ODS_DATABASE_URL", "")
+    url = os.environ.get("ODS_TEST_DATABASE_URL" if test_only else "ODS_DATABASE_URL")
+    if url is None and not test_only:
+        url = _private_database_url()
     if not url:
         raise OdsError("ODS_DATABASE_URL_MISSING")
     try:
@@ -135,16 +167,20 @@ def validate_source(name, conn_info):
             or conn_info["kind"] != "csv"):
         raise OdsError("ODS_CONFIG_INVALID")
     validate_dataset(conn_info["dataset_id"])
+    if conn_info["dataset_id"].startswith(FINANCE_SUMMARY_PREFIX):
+        raise OdsError("ODS_DATASET_RESERVED")
     validate_batch(conn_info["etl_batch_date"])
     try:
         path = Path(conn_info["file_path"])
         if not path.is_absolute():
             path = PROJECT_ROOT / path
-        expected = GENERATED_ROOT / conn_info["dataset_id"] / SOURCES[name]["path"]
+        dataset = conn_info["dataset_id"]
+        source_root = PROJECT_ROOT / "data" if dataset == COURSE_DATASET else GENERATED_ROOT / dataset
+        expected = source_root / SOURCES[name]["path"]
         if (".." in path.parts or "\x00" in str(path)
                 or any(part.is_symlink() for part in (path, *path.parents))
                 or path.resolve() != expected
-                or GENERATED_ROOT.resolve() != GENERATED_ROOT):
+                or source_root.resolve() != source_root):
             raise ValueError
     except (OSError, ValueError, RuntimeError):
         raise OdsError("ODS_PATH_INVALID") from None

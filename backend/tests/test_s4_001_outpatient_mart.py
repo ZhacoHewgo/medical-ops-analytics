@@ -7,7 +7,10 @@ import subprocess
 import sys
 from uuid import uuid4
 
+import pandas as pd
 import pytest
+
+from sql_fixture import execute_schema
 
 from etl.config import source_config as sources
 from etl.jobs import aggregate_dws as mart, build_dims, build_dwd
@@ -21,21 +24,168 @@ SECOND_DEPT = "SIM_DEPT_02"
 DWS, ADS = "dws_dept_daily", "ads_outpatient_theme"
 
 
-@pytest.mark.parametrize("function,args", [
-    ("rerun", ("2025-01-01",)),
-    ("rerun", (("2025-01-03", "2025-01-01"),)),
-    ("rerun", (("2025-1-01", "2025-01-03"),)),
-    ("build_dws_daily", (" ", DAY)),
-    ("build_dws_daily", (None, None)),
-    ("build_theme_marts", ("income",)),
+def test_build_dws_daily_aggregates_the_dataframe_without_connecting(monkeypatch):
+    def unexpected_connection():
+        pytest.fail("table input reached the database")
+
+    monkeypatch.setattr(mart, "connect_database", unexpected_connection)
+    source = pd.DataFrame([
+        (DAY, FIRST_DEPT, "OUTPATIENT", "10.20"),
+        (DAY, FIRST_DEPT, "OUTPATIENT", "-2.10"),
+        (DAY, FIRST_DEPT, "INPATIENT", "900.00"),
+        (DAY, SECOND_DEPT, "OUTPATIENT", None),
+        ("2025-01-02", FIRST_DEPT, "OUTPATIENT", "3.00"),
+    ], columns=["visit_date", "dept_code", "visit_type", "source_total_fee"])
+    before = source.copy(deep=True)
+    result = mart.build_dws_daily(source, DAY).set_index("dept_code")
+    assert result.loc[FIRST_DEPT, "outpatient_visits"] == 2
+    assert result.loc[FIRST_DEPT, "outpatient_total_fee"] == Decimal("8.10")
+    assert result.loc[SECOND_DEPT, "outpatient_fee_samples"] == 0
+    assert result.loc[SECOND_DEPT, "outpatient_total_fee"] is None
+    assert result.loc[SECOND_DEPT, "fee_status"] == "INCOMPLETE_INPUT"
+    assert len(mart.build_dws_daily(source)) == 3
+    pd.testing.assert_frame_equal(source, before)
+
+
+def test_build_dws_daily_keeps_dataframe_datasets_separate():
+    source = pd.DataFrame({"dataset_id": ["SIM_A", "SIM_B"], "date": [DAY, DAY],
+                           "department": [FIRST_DEPT, FIRST_DEPT], "amount": [1, 2]})
+    result = mart.build_dws_daily(source).set_index("dataset_id")
+    assert result["outpatient_total_fee"].to_dict() == {"SIM_A": Decimal("1.00"), "SIM_B": Decimal("2.00")}
+    assert mart.build_dws_daily(source, dataset_id="SIM_B")["dataset_id"].tolist() == ["SIM_B"]
+
+
+@pytest.mark.parametrize("function,args,code", [
+    ("rerun", ("2025-01-01",), "N9_RANGE_INVALID"),
+    ("rerun", (("2025-01-03", "2025-01-01"),), "N9_RANGE_INVALID"),
+    ("rerun", (("2025-1-01", "2025-01-03"),), "N9_DATE_INVALID"),
+    ("build_dws_daily", (" ", DAY), "N9_DEPARTMENT_EMPTY"),
+    ("build_dws_daily", ("", DAY), "N9_DEPARTMENT_EMPTY"),
+    ("build_dws_daily", ("\t\n", DAY), "N9_DEPARTMENT_EMPTY"),
+    ("build_dws_daily", ({"dept": FIRST_DEPT}, DAY), "N9_DEPARTMENT_TYPE_MAPPING"),
+    ("build_dws_daily", ([FIRST_DEPT], DAY), "N9_DEPARTMENT_TYPE_SEQUENCE"),
+    ("build_dws_daily", ((FIRST_DEPT, DAY), DAY), "N9_DEPARTMENT_TYPE_SEQUENCE"),
+    ("build_dws_daily", (True, DAY), "N9_DEPARTMENT_TYPE_OTHER"),
+    ("build_dws_daily", (1001.5, DAY), "N9_DEPARTMENT_TYPE_NUMERIC"),
+    ("build_dws_daily", (Decimal("1001"), DAY), "N9_DEPARTMENT_TYPE_NUMERIC"),
+    ("build_dws_daily", (object(), DAY), "N9_DEPARTMENT_TYPE_OTHER"),
+    ("build_dws_daily", ("X" * 65, DAY), "N9_DEPARTMENT_FORMAT"),
+    ("build_dws_daily", (FIRST_DEPT[:4] + "\x00" + FIRST_DEPT[4:], DAY), "N9_DEPARTMENT_FORMAT"),
+    ("build_dws_daily", ("2025-1-01",), "N9_DATE_INVALID"),
+    ("build_dws_daily", (FIRST_DEPT, "2025-02-30"), "N9_DATE_INVALID"),
+    ("build_dws_daily", (FIRST_DEPT, "2025-01-01T99:99:99"), "N9_DATE_INVALID"),
+    ("build_dws_daily", (DAY, DAY), "N9_ARGUMENTS_INVALID"),
+    ("build_dws_daily", (None, None), "N9_DATE_REQUIRED"),
+    ("build_dws_daily", (FIRST_DEPT,), "N9_DATE_REQUIRED"),
+    ("build_dws_daily", (), "N9_DATE_REQUIRED"),
+    ("build_theme_marts", ("unknown",), "N9_THEME_INVALID"),
+    ("build_theme_marts", (None,), "N9_THEME_INVALID"),
 ])
-def test_bad_request_before_connection(function, args, monkeypatch):
+def test_bad_request_before_connection(function, args, code, monkeypatch):
     def unexpected_connection():
         pytest.fail("invalid arguments reached the database")
 
     monkeypatch.setattr(mart, "connect_database", unexpected_connection)
-    with pytest.raises(sources.OdsError, match="N9_ARGUMENTS_INVALID"):
+    with pytest.raises(sources.OdsError, match=code) as caught:
         getattr(mart, function)(*args)
+    assert str(caught.value) == code
+
+
+@pytest.mark.parametrize("name,parameters", [
+    ("build_dws_daily", ("dept", "date")),
+    ("build_theme_marts", ("theme",)),
+    ("rerun", ("date_range", "end_date")),
+])
+def test_public_step_signatures_stay_callable_as_documented(name, parameters):
+    import inspect
+
+    signature = inspect.signature(getattr(mart, name))
+    positional = tuple(
+        parameter.name for parameter in signature.parameters.values()
+        if parameter.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+    )
+    assert positional == parameters
+    required = {
+        parameter.name for parameter in signature.parameters.values()
+        if parameter.default is inspect.Parameter.empty
+        and parameter.kind is not inspect.Parameter.VAR_KEYWORD
+    }
+    assert required <= set(parameters)
+    assert {"dataset_id", "batch_date", "env"} <= set(signature.parameters)
+
+
+@pytest.mark.parametrize("kwargs,code", [
+    ({"env": "prod"}, "N9_ENV_INVALID"),
+    ({"batch_date": "2025-1-01"}, "N9_BATCH_INVALID"),
+    ({"dataset_id": " "}, "N9_DATASET_INVALID"),
+])
+def test_scope_arguments_get_distinct_safe_codes(kwargs, code, monkeypatch):
+    monkeypatch.setenv("ODS_DATABASE_URL", "mysql://SIM:SIM@127.0.0.1:13306/hospital")
+    with pytest.raises(sources.OdsError, match=code):
+        mart._scope(kwargs.get("dataset_id"), kwargs.get("batch_date", DAY), kwargs.get("env", "dev"), "N9")
+
+
+def test_scope_normalizes_date_objects_before_upstream_check(monkeypatch):
+    monkeypatch.setenv("ODS_DATABASE_URL", "mysql://SIM:SIM@127.0.0.1:13306/hospital")
+    assert mart._scope(None, date(2025, 1, 1), "dev", "N9") == DAY
+    assert mart._scope(None, "2025-01-01 00:00:00", "dev", "N9") == DAY
+    assert mart._scope(None, None, "dev", "N9") is None
+
+
+def test_daily_entry_matches_course_call_and_keeps_explicit_date(monkeypatch):
+    calls = []
+
+    def capture(span, dept, operation, dataset_id, batch_date, env, *, themes=()):
+        calls.append((span, dept, operation))
+        return {"status": "PASS"}
+
+    monkeypatch.setattr(mart, "_run", capture)
+    assert mart.build_dws_daily(DAY)["status"] == "PASS"
+    assert calls[-1] == ((DAY, DAY), None, "daily")
+    assert mart.build_dws_daily(FIRST_DEPT, date.fromisoformat(DAY))["status"] == "PASS"
+    assert calls[-1] == ((DAY, DAY), FIRST_DEPT, "daily")
+    assert mart.build_dws_daily(date.fromisoformat(DAY), FIRST_DEPT)["status"] == "PASS"
+    assert calls[-1] == ((DAY, DAY), FIRST_DEPT, "daily")
+    assert mart.build_dws_daily(FIRST_DEPT, DAY + " 00:00:00")["status"] == "PASS"
+    assert calls[-1] == ((DAY, DAY), FIRST_DEPT, "daily")
+    for missing in ((), (FIRST_DEPT,), (None, None)):
+        with pytest.raises(sources.OdsError, match="N9_DATE_REQUIRED"):
+            mart.build_dws_daily(*missing)
+    assert calls[-1] == ((DAY, DAY), FIRST_DEPT, "daily")
+    assert mart.rerun((date.fromisoformat(DAY), date.fromisoformat(DAY)))["status"] == "PASS"
+    assert calls[-1] == ((DAY, DAY), None, "rerun")
+    assert mart.rerun(DAY, DAY)["status"] == "PASS"
+    assert calls[-1] == ((DAY, DAY), None, "rerun")
+
+
+@pytest.mark.parametrize("value,expected", [
+    (DAY, DAY),
+    (DAY + " 00:00:00", DAY),
+    (DAY + "T23:59:59", DAY),
+    (DAY + "T00:00:00Z", DAY),
+    ("2025-01-01x", None),
+    ("2025-01-01T99:99:99", None),
+    ("2025-01-01 00:00:00junk", None),
+    ("2025-02-30", None),
+    ("", None),
+])
+def test_day_parsing_never_accepts_a_partial_value(value, expected):
+    assert mart._day(value) == expected
+
+
+def test_missing_database_config_is_not_reported_as_bad_arguments(monkeypatch):
+    monkeypatch.delenv("ODS_DATABASE_URL", raising=False)
+    monkeypatch.delenv("ODS_TEST_DATABASE_URL", raising=False)
+    with pytest.raises(sources.OdsError, match="ODS_DATABASE_URL_MISSING"):
+        mart.build_dws_daily(None, DAY)
+    with pytest.raises(sources.OdsError, match="ODS_DATABASE_URL_MISSING"):
+        mart.rerun((DAY, DAY))
+
+
+def test_env_database_mismatch_is_reported_distinctly(monkeypatch):
+    monkeypatch.setenv("ODS_DATABASE_URL", "mysql://SIM:SIM@127.0.0.1:13306/hospital_test")
+    with pytest.raises(sources.OdsError, match="N9_ENV_DATABASE_MISMATCH"):
+        mart.build_dws_daily(None, DAY, env="dev")
 
 
 def read_rows(dataset):
@@ -74,7 +224,7 @@ def test_mysql_outpatient_mart_and_bounded_backfill(mysql_pipeline, monkeypatch)
     assert not report_path.exists()
     with sources.connect_database(test_only=True) as connection, connection.cursor() as cursor:
         for relative in ("sql/dws/dws_tables.sql", "sql/ads/ads_tables.sql"):
-            cursor.execute((root / relative).read_text())
+            execute_schema(cursor, root / relative)
         assert read_rows(dataset) == {DWS: (), ADS: ()}
         assert read_rows(other) == {DWS: (), ADS: ()}
 

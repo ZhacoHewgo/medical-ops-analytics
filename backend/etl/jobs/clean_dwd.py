@@ -6,6 +6,7 @@ from functools import wraps
 import hashlib
 import hmac
 import json
+from numbers import Integral
 import os
 import re
 import unicodedata
@@ -13,6 +14,7 @@ from uuid import uuid4
 
 import pandas as pd
 import pymysql
+from etl.config import course_mapping
 from etl.config.source_config import (
     OdsError, PROJECT_ROOT, SOURCES, database_options, validate_batch,
     validate_dataset, validate_source,
@@ -63,7 +65,7 @@ SAFE_CODES = frozenset(('DWD_ARGUMENTS_INVALID DWD_CONFIG_INVALID DWD_SCHEMA_INV
     'DWD_COMMIT_UNKNOWN DWD_INTERNAL_ERROR DQ_READ_RETRYABLE DQ_ARGUMENTS_INVALID '
     'DQ_CONFIG_INVALID DQ_SNAPSHOT_MISMATCH DQ_STALE DQ_RULE_ERROR DQ_INTERNAL_ERROR '
     'DQ_REPORT_PATH_INVALID DQ_REPORT_IDENTITY_CONFLICT DQ_REPORT_WRITE_FAILED '
-    'DQ_GATE_FAILED DQ_INSUFFICIENT_EVIDENCE').split())
+    'DQ_GATE_FAILED DQ_INSUFFICIENT_EVIDENCE ODS_DATABASE_URL_MISSING ODS_DATABASE_URL_INVALID').split())
 
 
 def _safe(code):
@@ -88,7 +90,9 @@ def _missing(value):
         not isinstance(value, (str, list, dict)) and bool(pd.isna(value)))
 
 
-def _valid_id(value):
+def _valid_id(value, *, integer=False):
+    if integer and isinstance(value, Integral) and not isinstance(value, bool):
+        return True
     return (isinstance(value, str) and 1 <= len(value) <= 128 and value == value.strip()
             and not any(unicodedata.category(ch) == 'Cc' for ch in value))
 
@@ -118,7 +122,7 @@ def _config():
             or value['tables'] != TABLES or value['mappings'] != MAPPINGS or value['rules'] != RULES
             or not isinstance(value['rules_version'], str)
             or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,63}', value['rules_version'])
-            or value['mapping_version'] != 'node07-sim-mapping-v1'
+            or value['mapping_version'] != course_mapping.SIM_VERSION
             or not isinstance(value['approved_complete_intervals'], list)):
         raise ValueError
     seen = set()
@@ -140,31 +144,49 @@ def _config():
 
 
 @_safe('DWD_ARGUMENTS_INVALID')
-def dedupe(df, keys):
-    if (not isinstance(df, pd.DataFrame) or not isinstance(keys, (list, tuple)) or not keys
-            or any(k not in df.columns for k in keys) or len(set(keys)) != len(keys)
-            or not df.columns.is_unique):
+def dedupe(df, keys=None, *, with_counts=False):
+    if not isinstance(df, pd.DataFrame) or not df.columns.is_unique:
         raise ValueError
-    records = df.to_dict('records')
-    groups = {}
     counts = dict(invalid_id_rows=0, conflicting_id_rows=0, duplicate_removed=0)
-    group_keys = list(dict.fromkeys((['dataset_id'] if 'dataset_id' in df.columns else []) + list(keys)))
+    if keys is None:
+        key = next((name for name in ('charge_id', 'record_id', 'report_id', 'visit_id', 'id')
+                    if name in df.columns), None)
+        if key is None:
+            before = len(df)
+            df.drop_duplicates(inplace=True, ignore_index=True)
+            counts['duplicate_removed'] = before - len(df)
+            return (df, counts) if with_counts else df
+        keys = ['dataset_id', key] if 'dataset_id' in df.columns else [key]
+    if (not isinstance(keys, (list, tuple)) or not keys
+            or any(k not in df.columns for k in keys) or len(set(keys)) != len(keys)):
+        raise ValueError
+    records = df.astype(object).where(df.notna(), None).to_dict('records')
+    groups = {}
     business = [col for col in df.columns if col not in (*META, 'etl_load_time', 'source_batch_date')]
     for index, row in enumerate(records):
-        if not all(_valid_id(row[k]) for k in group_keys):
+        if not all(_valid_id(row[key], integer=key != 'dataset_id') for key in keys):
             counts['invalid_id_rows'] += 1
             continue
-        groups.setdefault(tuple(row[k] for k in group_keys), []).append(index)
+        groups.setdefault(tuple(row[key] for key in keys), []).append(index)
     retained = []
     for indexes in groups.values():
         first = records[indexes[0]]
         if any(any(row[col] != first[col] for col in business) for row in (records[i] for i in indexes)):
+            if 'updated_at' in df.columns:
+                timestamps = pd.to_datetime([records[i]['updated_at'] for i in indexes],
+                                            format='ISO8601', utc=True, errors='coerce')
+                latest = timestamps == timestamps.max()
+                if timestamps.notna().all() and latest.sum() == 1:
+                    retained.append(indexes[latest.argmax()])
+                    counts['duplicate_removed'] += len(indexes) - 1
+                    continue
             counts['conflicting_id_rows'] += len(indexes)
             continue
         chosen = min(indexes, key=lambda i: records[i]['source_row_number']) if 'source_row_number' in df.columns else indexes[0]
         retained.append(chosen)
         counts['duplicate_removed'] += len(indexes) - 1
-    return df.iloc[sorted(retained)].copy(deep=True).reset_index(drop=True), counts
+    result = df.iloc[sorted(retained)].copy(deep=True).reset_index(drop=True)
+    return (result, counts) if with_counts else result
 
 
 @_safe('DWD_ARGUMENTS_INVALID')
@@ -209,17 +231,24 @@ def standardize_codes(df, mapping, column):
 
 
 @_safe('DWD_ARGUMENTS_INVALID')
-def mask_privacy(df, columns):
-    if (not isinstance(df, pd.DataFrame) or not isinstance(columns, (list, tuple))
-            or len(set(columns)) != len(columns) or any(col not in SUPPRESSION or col not in df.columns for col in columns)):
+def mask_privacy(df, columns=None):
+    if not isinstance(df, pd.DataFrame) or not df.columns.is_unique:
         raise ValueError
-    result = df.copy(deep=True)
+    private_columns = (*SUPPRESSION, 'name', 'id_no', 'id_number', 'id_card_no', 'mobile',
+                       'phone_number', '姓名', '身份证', '身份证号', '电话', '手机号')
+    implicit = columns is None
+    if implicit:
+        columns = [col for col in df.columns if col in private_columns]
+    if (not isinstance(columns, (list, tuple)) or len(set(columns)) != len(columns)
+            or any(col not in private_columns or col not in df.columns for col in columns)):
+        raise ValueError
+    result = df if implicit else df.copy(deep=True)
     stats = {}
     for column in columns:
         missing = [_missing(value) for value in df[column]]
         result[column] = [None if absent else '[REDACTED]' for absent in missing]
         stats[column] = dict(nonempty=len(df) - sum(missing), processed=len(df) - sum(missing), missing=sum(missing))
-    return result, stats
+    return result if implicit else (result, stats)
 
 
 @_safe('DWD_PRIVACY_KEY_INVALID')
@@ -316,9 +345,10 @@ def _prepare(table, rows, batch, dataset, key, key_id, run_id, config):
     if len({r['source_row_number'] for r in rows}) != len(rows):
         raise OdsError('DWD_SOURCE_MISMATCH') from None
     frame = pd.DataFrame(rows, columns=source_columns)
-    candidates, dedup = dedupe(frame, [spec['id_column']])
+    candidates, dedup = dedupe(frame, ['dataset_id', spec['id_column']], with_counts=True)
     quarantine = dict(invalid_id_rows=dedup['invalid_id_rows'], conflicting_id_rows=dedup['conflicting_id_rows'], invalid_primary_date_rows=0)
     business = [col for col in spec['columns'] if col not in COMMON and col not in SUPPRESSION]
+    mappings = course_mapping.source_mappings(dataset, spec['source'], config['mappings'])
     fields = {col: dict(missing=0, invalid=0, filled=0, negative=0) for col in business}
     mapping = {col: dict(slots=0, matched=0, unmapped=0) for col in spec['mapping_columns']}
     private_columns = ['patient_id'] + [col for col in SUPPRESSION if col in source_columns]
@@ -336,8 +366,8 @@ def _prepare(table, rows, batch, dataset, key, key_id, run_id, config):
                       etl_load_time=load_time, patient_key=_patient_key(key, dataset, raw['patient_id']))
         for col in business:
             if col in spec['mapping_columns']:
-                hit = raw[col] in config['mappings'][col]
-                result[col] = config['mappings'][col].get(raw[col], 'UNMAPPED')
+                hit = raw[col] in mappings[col]
+                result[col] = mappings[col].get(raw[col], 'UNMAPPED')
                 mapping[col]['slots'] += 1
                 mapping[col]['matched' if hit else 'unmapped'] += 1
                 if _missing(raw[col]):
@@ -362,7 +392,7 @@ def _prepare(table, rows, batch, dataset, key, key_id, run_id, config):
     stats = dict(quarantined_by_reason=quarantine, field_counts=fields, mapping_counts=mapping,
                  privacy_counts=privacy, filled_rows=0, filled_cells=0)
     audit = dict(dataset_id=dataset, table_name=table, clean_run_id=run_id, batch_date=_day(batch),
-                 rules_version=config['rules_version'], mapping_version=config['mapping_version'], privacy_key_id=key_id,
+                 rules_version=config['rules_version'], mapping_version=course_mapping.version(dataset), privacy_key_id=key_id,
                  source_rows=len(rows), accepted_rows=len(output), duplicate_removed=dedup['duplicate_removed'],
                  quarantined_rows=sum(quarantine.values()), source_sha256=quality_digest('source', source_columns, rows),
                  result_sha256=quality_digest('dwd', spec['columns'], output), stats_json=stats, updated_at=load_time)
@@ -694,7 +724,7 @@ def load_quality_snapshot_from_cursor(cursor, batch_date=None, *, dataset_id=Non
         raise OdsError('DQ_SNAPSHOT_MISMATCH') from None
     run_id, batch, rules, mapping, key_id = next(iter(identities))
     if ((batch_date is not None and str(batch) != batch_date)
-            or rules != config['rules_version'] or mapping != config['mapping_version']):
+            or rules != config['rules_version'] or mapping != course_mapping.version(selected)):
         raise OdsError('DQ_SNAPSHOT_MISMATCH') from None
     _day(str(batch))
     result = dict(schema_version='node07-snapshot-v1', dataset_id=selected, clean_run_id=run_id,
@@ -704,18 +734,41 @@ def load_quality_snapshot_from_cursor(cursor, batch_date=None, *, dataset_id=Non
         source = SOURCES[spec['source']]
         rows = _source(cursor, table, selected)
         columns = spec['columns']
-        cursor.execute('SELECT ' + ','.join(f'`{col}`' for col in columns) + f" FROM `{table}` WHERE dataset_id=%s ORDER BY BINARY `{spec['id_column']}`", (selected,))
+        cursor.execute('SELECT ' + ','.join(f'`{col}`' for col in columns) + f" FROM `{table}` WHERE dataset_id=%s ORDER BY `{spec['id_column']}`", (selected,))
         dwd_rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
         result['tables'][table] = dict(source=dict(table=source['table'], columns=list(source['columns'] + META), rows=rows),
                                        dwd=dict(table=table, columns=list(columns), rows=dwd_rows), audit=audits[table])
     return result
 
 
-def build_dwd_visit(start_date, end_date, *, dataset_id=None, batch_date=None, env='dev'):
-    from etl.jobs.build_dwd import _public_partial
-    return _public_partial(start_date,end_date,dataset_id=dataset_id,batch_date=batch_date,env=env,scope='VISIT')
+_END_DATE_OMITTED = object()
 
 
-def build_dwd_charge(start_date, end_date, *, dataset_id=None, batch_date=None, env='dev'):
-    from etl.jobs.build_dwd import _public_partial
-    return _public_partial(start_date,end_date,dataset_id=dataset_id,batch_date=batch_date,env=env,scope='CHARGE')
+def _build_date_range(start_date, end_date):
+    if end_date is _END_DATE_OMITTED:
+        if isinstance(start_date, (tuple, list)) and len(start_date) == 2:
+            start_date, end_date = start_date
+        else:
+            end_date = start_date
+    if isinstance(start_date, datetime):
+        start_date = start_date.date()
+    if isinstance(end_date, datetime):
+        end_date = end_date.date()
+    return (start_date.isoformat() if isinstance(start_date, date) else start_date,
+            end_date.isoformat() if isinstance(end_date, date) else end_date)
+
+
+def build_dwd_visit(start_date, end_date=_END_DATE_OMITTED, *, dataset_id=None, batch_date=None, env='dev'):
+    from etl.jobs.build_dwd import _public_partial, build_detail_frame
+    if isinstance(start_date, pd.DataFrame) and end_date is _END_DATE_OMITTED:
+        return build_detail_frame(start_date, dataset_id=dataset_id, scope='VISIT')
+    start_date, end_date = _build_date_range(start_date, end_date)
+    return _public_partial(start_date, end_date, dataset_id=dataset_id, batch_date=batch_date, env=env, scope='VISIT')
+
+
+def build_dwd_charge(start_date, end_date=_END_DATE_OMITTED, *, dataset_id=None, batch_date=None, env='dev'):
+    from etl.jobs.build_dwd import _public_partial, build_detail_frame
+    if isinstance(start_date, pd.DataFrame) and end_date is _END_DATE_OMITTED:
+        return build_detail_frame(start_date, dataset_id=dataset_id, scope='CHARGE')
+    start_date, end_date = _build_date_range(start_date, end_date)
+    return _public_partial(start_date, end_date, dataset_id=dataset_id, batch_date=batch_date, env=env, scope='CHARGE')

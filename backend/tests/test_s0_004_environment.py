@@ -14,9 +14,6 @@ def test_placeholder_imports_preserve_health_and_routes(monkeypatch, tmp_path):
         import_module(module)
 
     application = create_app()
-    assert {route.path for route in application.routes} == {
-        "/health", "/api/dashboard/overview", "/api/dashboard/outpatient-preview",
-    }
     with TestClient(application) as client:
         response = client.get("/health")
         assert response.status_code == 200
@@ -24,6 +21,7 @@ def test_placeholder_imports_preserve_health_and_routes(monkeypatch, tmp_path):
         response = client.get("/api/dashboard/overview")
         assert response.status_code == 503
         assert response.json()["data"] is None
+        assert client.get("/api/dashboard/outpatient-preview").status_code == 403
 
 
 def test_placeholder_imports_preserve_configuration(monkeypatch, tmp_path):

@@ -215,10 +215,12 @@ def main(argv=None):
         parser.add_argument("--end")
         parser.add_argument("--env", choices=("dev", "test"), default="dev")
         parser.add_argument("--schedule", action="store_true")
+        parser.add_argument("--managed-schedule", action="store_true")
         parser.add_argument("--through", choices=("extract", "quality", "dwd"), default="extract")
         args = parser.parse_args(argv)
         _validate_dates(args.start, args.end)
-        if args.schedule and (args.start is not None or args.through == "dwd"):
+        if (args.managed_schedule and not args.schedule
+                or args.schedule and (args.start is not None or args.through == "dwd")):
             raise scheduling.EtlError("ETL_ARGUMENTS_INVALID")
         scheduling.register_task("extract_ods", _extract_task(args.start, args.end, args.schedule,
                                                            through=args.through))
@@ -228,7 +230,8 @@ def main(argv=None):
         if args.through == "dwd":
             scheduling.register_task("build_dwd", _dwd_task(args.start, args.end))
         if args.schedule:
-            scheduler = scheduling.setup_schedule(env=args.env)
+            scheduler = (scheduling.setup_schedule(env=args.env, managed=True) if args.managed_schedule
+                         else scheduling.setup_schedule(env=args.env))
             try:
                 scheduler.start()
             except KeyboardInterrupt:

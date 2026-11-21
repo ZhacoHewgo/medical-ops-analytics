@@ -15,7 +15,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from etl.config.source_config import OdsError, SOURCES
+from etl.config import course_mapping
+from etl.config.source_config import COURSE_DATASET, OdsError, SOURCES
 from etl.jobs import quality_check as q
 
 DATASET = "SIM_Q7"
@@ -111,7 +112,7 @@ def fixture(days=(("2025-01-01", 10), ("2025-01-02", 10))):
 
 class QualityTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory(dir="/private/tmp")
+        self.tmp = tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve())
         self.addCleanup(self.tmp.cleanup)
         self.config = dict(rules_version="node07-rules-v1", mapping_version="node07-sim-mapping-v1", approved_complete_intervals=[])
         self.snap = fixture()
@@ -131,10 +132,11 @@ class QualityTests(unittest.TestCase):
     def path(self):
         return Path(self.tmp.name) / "logs/test/quality_report_20250103.json"
 
-    def assert_code(self, code, call):
+    def assert_code(self, code, call, *, detail=None):
         with self.assertRaises(OdsError) as caught:
             call()
-        self.assertTrue(str(caught.exception) == code)
+        self.assertEqual(caught.exception.code, code)
+        self.assertEqual(str(caught.exception), code if detail is None else f"{code}: {detail}")
         self.assertTrue(caught.exception.__suppress_context__)
 
     def test_34_fixed_denominator_and_no_snapshot_mutation(self):
@@ -287,17 +289,114 @@ class QualityTests(unittest.TestCase):
         self.assert_code("DQ_ARGUMENTS_INVALID", lambda: q.check_null_ratio("select secret", ["patient_id"], snapshot=self.snap))
         self.assert_code("DQ_ARGUMENTS_INVALID", lambda: q.check_null_ratio(SPECS[0][0], ["diagnosis"], snapshot=self.snap))
         self.assert_code("DQ_ARGUMENTS_INVALID", lambda: q.check_volume_wave(SPECS[0][0], threshold=0.31, snapshot=self.snap))
-        self.assert_code("DQ_ARGUMENTS_INVALID", lambda: q.generate_quality_report(BATCH, env="dev"))
-        self.assert_code("DQ_ARGUMENTS_INVALID", lambda: q.generate_quality_report("2025-02-30", env="test"))
+        self.assert_code("DQ_ARGUMENTS_INVALID", lambda: q.generate_quality_report(BATCH, env="dev"),
+                         detail="DATABASE_ENV_MISMATCH")
+        self.assert_code("DQ_ARGUMENTS_INVALID", lambda: q.generate_quality_report("2025-02-30", env="test"),
+                         detail="BATCH_DATE_INVALID")
+
+    def test_report_accepts_and_normalizes_date_objects(self):
+        report = q.generate_quality_report(date.fromisoformat(BATCH), dataset_id=DATASET, env="test")
+        self.assertEqual(report["batch_date"], BATCH)
+
+    def test_report_normalizes_compact_batch_dates(self):
+        report = q.generate_quality_report(BATCH.replace("-", ""), dataset_id=DATASET, env="test")
+        self.assertEqual(report["batch_date"], BATCH)
+        self.assert_code("DQ_ARGUMENTS_INVALID", lambda: q.generate_quality_report("20250230", env="test"),
+                         detail="BATCH_DATE_INVALID")
+
+    def test_report_resolves_course_dataset_from_certified_snapshot(self):
+        with patch.object(q, "COURSE_DATASET", DATASET, create=True), patch.object(
+            q, "_load_snapshot", return_value=self.snap
+        ) as load:
+            report = q.generate_quality_report(DATASET, env="test")
+            load.assert_called_once_with(None, dataset_id=DATASET)
+            self.assertEqual(report["batch_date"], BATCH)
+            self.assert_code("DQ_ARGUMENTS_INVALID",
+                             lambda: q.generate_quality_report(DATASET, dataset_id="another", env="test"),
+                             detail="DATASET_SELECTOR_INVALID")
+
+    def test_latest_report_uses_the_current_clean_snapshot(self):
+        with patch.object(q, "_load_snapshot", return_value=self.snap) as load:
+            report = q.generate_quality_report("latest", dataset_id=DATASET, env="test")
+            load.assert_called_once_with(None, dataset_id=DATASET)
+            self.assertEqual(report["batch_date"], BATCH)
+
+    def test_report_resolves_course_batch_label_to_the_certified_snapshot(self):
+        with patch.object(q, "COURSE_DATASET", DATASET), patch.object(
+            q, "database_options", return_value={"database": "hospital"}
+        ), patch.object(q, "_load_snapshot", return_value=self.snap) as load:
+            report = q.generate_quality_report("course-check")
+            self.assertEqual(report["batch_date"], BATCH)
+            self.assertEqual(report["dataset_id"], DATASET)
+            load.assert_called_once_with(None, dataset_id=DATASET)
+            self.assert_code("DQ_ARGUMENTS_INVALID",
+                             lambda: q.generate_quality_report("course-check", dataset_id="another"),
+                             detail="BATCH_DATE_LABEL_NOT_CALENDAR")
+            self.assert_code("DQ_ARGUMENTS_INVALID",
+                             lambda: q.generate_quality_report("course-2025-02-30"),
+                             detail="BATCH_DATE_LABEL_NOT_CALENDAR")
+
+    def test_report_normalizes_unambiguous_dated_values(self):
+        for batch in (20250103, datetime.fromisoformat("2025-01-03T00:00:00+08:00"),
+                      " 2025-01-03T00:00:00+08:00 ", " 2025-01-03 ",
+                      "2025/1/3", "2025.01.03", "2025-1-3", "2025年1月3日"):
+            with self.subTest(batch=batch):
+                report = q.generate_quality_report(batch, dataset_id=DATASET, env="test")
+                self.assertEqual(report["batch_date"], BATCH)
+
+    def test_report_preserves_snapshot_setup_error_codes(self):
+        for code in ("DWD_SCHEMA_INVALID", "DWD_SOURCE_MISMATCH"):
+            with self.subTest(code=code), patch.object(q, "_load_snapshot", side_effect=OdsError(code)):
+                self.assert_code(code, self.report)
+                self.assertFalse(self.path().exists())
+
+    def test_report_argument_errors_identify_reason_without_input_values(self):
+        cases = (
+            ("SIM_PRIVATE_BATCH", "test", DATASET, "BATCH_DATE_LABEL_NOT_CALENDAR"),
+            ("01/03/2025", "test", DATASET, "BATCH_DATE_INVALID_TEXT"),
+            (None, "test", DATASET, "BATCH_DATE_MISSING"),
+            ("", "test", DATASET, "BATCH_DATE_MISSING"),
+            ("2025-01", "test", DATASET, "BATCH_DATE_MISSING_DAY"),
+            ("202501", "test", DATASET, "BATCH_DATE_MISSING_DAY"),
+            ({"private": "value"}, "test", DATASET, "BATCH_DATE_INVALID_TYPE"),
+            (BATCH, "SIM_PRIVATE_ENV", DATASET, "REPORT_ENV_INVALID"),
+            (BATCH, "test", "SIM PRIVATE DATASET", "DATASET_SELECTOR_INVALID"),
+            (BATCH, "dev", DATASET, "DATABASE_ENV_MISMATCH"),
+        )
+        for batch, env, dataset, detail in cases:
+            with self.subTest(detail=detail):
+                self.assert_code("DQ_ARGUMENTS_INVALID",
+                                 lambda: q.generate_quality_report(batch, env=env, dataset_id=dataset),
+                                 detail=detail)
+
+    def test_report_distinguishes_database_config_from_invalid_arguments(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assert_code("ODS_DATABASE_URL_MISSING", self.report)
+        with patch.dict(os.environ, {"ODS_DATABASE_URL": "SIM_BAD_URL"}):
+            self.assert_code("ODS_DATABASE_URL_INVALID", self.report)
+        self.assertFalse(self.path().exists())
 
     def test_report_identity_conflict_and_write_failure_preserve_old(self):
-        self.report(); old = self.path().read_bytes()
+        report = self.report(); old = self.path().read_bytes()
         self.assert_code("DQ_REPORT_IDENTITY_CONFLICT", lambda: q.generate_quality_report(BATCH, dataset_id="SIM_OTHER", env="test"))
         self.assertTrue(self.path().read_bytes() == old)
+        changed = dict(report, clean_run_id="22222222-2222-4222-8222-222222222222")
         with patch.object(q.os, "replace", side_effect=OSError("SIM_PRIVATE_OS_ERROR")):
-            self.assert_code("DQ_REPORT_WRITE_FAILED", self.report)
+            self.assert_code("DQ_REPORT_WRITE_FAILED", lambda: q._write_report(changed))
         self.assertTrue(self.path().read_bytes() == old)
         self.assertEqual(len(list(self.path().parent.glob("*.tmp"))), 0)
+
+    def test_repeat_quality_check_keeps_certified_bytes_until_content_changes(self):
+        report = self.report()
+        original = self.path().read_bytes()
+        repeat = dict(report, generated_at="2029-01-01T00:00:00+00:00")
+        q._write_report(repeat)
+        self.assertEqual(self.path().read_bytes(), original)
+        self.assertEqual(repeat["generated_at"], report["generated_at"])
+
+        repeat["clean_run_id"] = "22222222-2222-4222-8222-222222222222"
+        q._write_report(repeat)
+        self.assertNotEqual(self.path().read_bytes(), original)
 
     def test_existing_other_dataset_report_never_overwritten(self):
         self.report()
@@ -306,6 +405,33 @@ class QualityTests(unittest.TestCase):
         old = self.path().read_bytes()
         self.assert_code("DQ_REPORT_IDENTITY_CONFLICT", self.report)
         self.assertTrue(self.path().read_bytes() == old)
+
+    def test_course_mapping_upgrade_only_replaces_a_failed_legacy_report(self):
+        previous = dict(self.report(), dataset_id=COURSE_DATASET, gate_status="FAIL")
+        upgraded = dict(previous, mapping_version=course_mapping.COURSE_VERSION)
+        self.path().write_text(json.dumps(previous))
+        q._write_report(upgraded)
+        self.assertEqual(json.loads(self.path().read_text())["mapping_version"], course_mapping.COURSE_VERSION)
+
+        self.path().write_text(json.dumps(dict(previous, gate_status="PASS")))
+        self.assert_code("DQ_REPORT_IDENTITY_CONFLICT", lambda: q._write_report(upgraded))
+
+    def test_course_verification_reuses_private_key_only_for_matching_dev_audit(self):
+        home = Path(self.tmp.name)
+        path = home / ".medical-ops-analytics-course.key"
+        snapshot = {"dataset_id": COURSE_DATASET, "privacy_key_id": "course-platform-v1-key"}
+        with patch.object(Path, "home", return_value=home), patch.dict(os.environ, {}, clear=True):
+            self.assert_code("DWD_PRIVACY_KEY_MISSING", lambda: q._privacy_key(snapshot, env="dev"))
+            path.write_bytes(base64.b64encode(KEY))
+            path.chmod(0o600)
+            self.assertTrue(q._privacy_key(snapshot, env="dev") == KEY)
+            self.assert_code("DWD_PRIVACY_KEY_MISSING", lambda: q._privacy_key(snapshot, env="test"))
+            self.assert_code("DWD_PRIVACY_KEY_MISSING", lambda: q._privacy_key(dict(snapshot, dataset_id=DATASET), env="dev"))
+            self.assert_code("DWD_PRIVACY_KEY_MISSING", lambda: q._privacy_key(dict(snapshot, privacy_key_id="another"), env="dev"))
+            with patch.dict(os.environ, {"DWD_PRIVACY_KEY": "SIM_MALFORMED", "DWD_PRIVACY_KEY_ID": snapshot["privacy_key_id"]}):
+                self.assert_code("DWD_PRIVACY_KEY_INVALID", lambda: q._privacy_key(snapshot, env="dev"))
+            path.chmod(0o644)
+            self.assert_code("DWD_PRIVACY_KEY_INVALID", lambda: q._privacy_key(snapshot, env="dev"))
 
     def test_configuration_unknown_intervals_rejected(self):
         actual = Path(self.tmp.name) / "SIM-config.json"
