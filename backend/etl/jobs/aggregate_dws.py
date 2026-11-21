@@ -1,11 +1,14 @@
 """Daily DWS and theme ADS over a current, certified Node 8 build."""
 from collections.abc import Mapping
 from datetime import date as calendar_date, datetime
+from decimal import Decimal, localcontext
 from numbers import Number
 import os
 import re
 
-from etl.config.source_config import OdsError, connect_database, database_options, validate_batch
+import pandas as pd
+
+from etl.config.source_config import OdsError, connect_database, database_options, validate_batch, validate_dataset
 from etl.jobs import aggregate_themes, build_dwd as build, clean_dwd as clean
 from etl.scheduler import scheduler
 
@@ -17,10 +20,61 @@ COLUMNS = ("dataset_id", "stat_date", "dept_code", "batch_date", "source_build_r
 
 
 def build_dws_daily(dept=None, date=None, *, dataset_id=None, batch_date=None, env="dev"):
+    if isinstance(dept, pd.DataFrame):
+        return _daily_frame(dept, date, dataset_id)
     dept, day = _daily_arguments(dept, date)
     if day is None:
         raise OdsError("N9_DATE_REQUIRED")
     return _run(_date_range((day, day)), dept, "daily", dataset_id, batch_date, env)
+
+
+def _daily_frame(frame, requested_date, dataset_id):
+    day_filter = _day(requested_date)
+    if requested_date is not None and day_filter is None:
+        raise OdsError("N9_DATE_INVALID") from None
+    if dataset_id is not None:
+        validate_dataset(dataset_id)
+    if not frame.columns.is_unique:
+        raise OdsError("N9_FRAME_COLUMNS_INVALID") from None
+    day_column = next((name for name in ("visit_date", "stat_date", "date") if name in frame), None)
+    dept_column = next((name for name in ("dept_code", "department", "dept") if name in frame), None)
+    fee_column = next((name for name in ("source_total_fee", "fee_amount", "total_fee", "amount") if name in frame),
+                      "source_total_fee")
+    if day_column is None or dept_column is None:
+        raise OdsError("N9_FRAME_COLUMNS_INVALID") from None
+    fields = frame.reindex(columns=["dataset_id", day_column, dept_column, "visit_type", fee_column])
+    fields = fields.astype(object).where(fields.notna(), None)
+    groups = {}
+    with localcontext() as context:
+        context.prec = 40
+        for dataset, raw_day, raw_dept, kind, raw_fee in fields.itertuples(index=False, name=None):
+            if dataset is not None and dataset_id is not None and dataset != dataset_id:
+                continue
+            if kind == "INPATIENT":
+                continue
+            if kind not in (None, "OUTPATIENT"):
+                raise OdsError("N9_FRAME_VISIT_TYPE_INVALID") from None
+            day = _day(raw_day)
+            if day is None:
+                raise OdsError("N9_DATE_INVALID") from None
+            if day_filter is not None and day != day_filter:
+                continue
+            department = _department(raw_dept, "N9_DEPARTMENT", detail=True)
+            if department is None:
+                raise OdsError("N9_DEPARTMENT_EMPTY") from None
+            dataset = dataset_id if dataset is None else validate_dataset(dataset)
+            key = (dataset, day, department)
+            count, samples, amount = groups.get(key, (0, 0, Decimal("0.00")))
+            if raw_fee is not None:
+                try:
+                    amount += clean._decimal(str(raw_fee))
+                except ValueError:
+                    raise OdsError("N9_FRAME_AMOUNT_INVALID") from None
+                samples += 1
+            groups[key] = (count + 1, samples, amount)
+    rows = [(*key, count, samples, *aggregate_themes._measure(count, samples, amount))
+            for key, (count, samples, amount) in groups.items()]
+    return pd.DataFrame(rows, columns=COLUMNS[:3] + COLUMNS[5:])
 
 
 def build_theme_marts(theme, *, dataset_id=None, batch_date=None, env="dev"):

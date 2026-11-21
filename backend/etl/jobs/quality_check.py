@@ -15,12 +15,15 @@ import secrets
 import stat
 from uuid import UUID
 
-from etl.config.source_config import OdsError, SOURCES, database_options
+from etl.config import course_mapping
+from etl.config.source_config import COURSE_DATASET, OdsError, SOURCES, database_options
 
 _LOG_ROOT = Path(__file__).resolve().parents[1] / "logs"
 _CONFIG = Path(__file__).resolve().parents[1] / "config/dwd_rules.json"
 _RULES_VERSION = "node07-rules-v1"
-_MAPPING_VERSION = "node07-sim-mapping-v1"
+_MAPPING_VERSION = course_mapping.SIM_VERSION
+_COURSE_KEY_ID = "course-platform-v1-key"
+PRIVACY_KEY_ERRORS = frozenset(("DWD_PRIVACY_KEY_MISSING", "DWD_PRIVACY_KEY_INVALID"))
 _COMMON = "dataset_id source_row_number source_batch_date etl_batch_date etl_load_time patient_key".split()
 # Only frozen fields/constants; configuration cannot introduce SQL or expressions.
 _SPECS = {
@@ -33,7 +36,7 @@ _SPECS = {
 _TYPES = ("NULL", "DUPLICATE", "VALUE_RANGE", "VOLUME_WAVE", "RECONCILE")
 _CATALOG = [(t, k) for t in _SPECS for k in _TYPES] + [(t, "MAPPING") for t, s in _SPECS.items() if s[7]] + [(t, "PRIVACY") for t in _SPECS]
 _CODES = "OK OPTIONAL_MISSING SOURCE_INVALID_ID SOURCE_CONFLICTING_ID SOURCE_INVALID_PRIMARY_DATE DUPLICATE_REMOVED INVALID_VALUE REFUND_POLICY_UNCONFIRMED STAY_DAYS_POLICY_UNCONFIRMED UNMAPPED_CODE PRIVACY_VIOLATION RECONCILE_MISMATCH NO_BASELINE NO_COMPARABLE_PAIR ZERO_BASELINE VOLUME_WAVE STALE RULE_ERROR NOT_RUN".split()
-_ERRORS = set("DQ_READ_RETRYABLE DQ_ARGUMENTS_INVALID DQ_CONFIG_INVALID DQ_SNAPSHOT_MISMATCH DQ_STALE DQ_RULE_ERROR DQ_INTERNAL_ERROR DQ_REPORT_PATH_INVALID DQ_REPORT_IDENTITY_CONFLICT DQ_REPORT_WRITE_FAILED DQ_GATE_FAILED DQ_INSUFFICIENT_EVIDENCE DWD_PRIVACY_KEY_MISSING DWD_PRIVACY_KEY_INVALID DWD_PRIVACY_KEY_CHANGED ODS_DATABASE_URL_MISSING ODS_DATABASE_URL_INVALID".split())
+_ERRORS = set("DQ_READ_RETRYABLE DQ_ARGUMENTS_INVALID DQ_CONFIG_INVALID DQ_SNAPSHOT_MISMATCH DQ_STALE DQ_RULE_ERROR DQ_INTERNAL_ERROR DQ_REPORT_PATH_INVALID DQ_REPORT_IDENTITY_CONFLICT DQ_REPORT_WRITE_FAILED DQ_GATE_FAILED DQ_INSUFFICIENT_EVIDENCE DWD_SCHEMA_INVALID DWD_SOURCE_MISMATCH DWD_PRIVACY_KEY_MISSING DWD_PRIVACY_KEY_INVALID DWD_PRIVACY_KEY_CHANGED ODS_DATABASE_URL_MISSING ODS_DATABASE_URL_INVALID".split())
 _REASONS = ("invalid_id_rows", "conflicting_id_rows", "invalid_primary_date_rows")
 _SUPPRESSED = ("patient_name", "id_card", "phone")
 _AMOUNTS = {"fee_amount", "total_fee", "drug_fee", "consumable_fee", "amount"}
@@ -52,6 +55,7 @@ def _fail(code):
 
 class _ReportArgumentError(OdsError):
     def __init__(self, reason):
+        self.reason = reason
         super().__init__("DQ_ARGUMENTS_INVALID", detail=reason)
 
 
@@ -170,7 +174,7 @@ def _validate_identity(snapshot, batch_date=None, dataset_id=None, *, rules_vers
     if not isinstance(snapshot, dict) or set(snapshot) != top:
         _fail("DQ_SNAPSHOT_MISMATCH")
     if (snapshot["schema_version"] != "node07-snapshot-v1" or not _id(snapshot["rules_version"], 64)
-            or snapshot["mapping_version"] != _MAPPING_VERSION or not _id(snapshot["dataset_id"])
+            or snapshot["mapping_version"] != course_mapping.version(snapshot["dataset_id"]) or not _id(snapshot["dataset_id"])
             or not _id(snapshot["privacy_key_id"], 64) or _day(snapshot["batch_date"]) is None
             ):
         _fail("DQ_SNAPSHOT_MISMATCH")
@@ -510,8 +514,9 @@ def _audit_semantics(entry, table):
             return False
     if stats["filled_rows"] != 0 or stats["filled_cells"] != 0:
         return False
+    mappings = course_mapping.source_mappings(audit["dataset_id"], spec[1], _MAPPING)
     for col in spec[7].split():
-        matched = sum(r[col] in _MAPPING[col] for r in candidates)
+        matched = sum(r[col] in mappings[col] for r in candidates)
         if stats["mapping_counts"][col] != dict(slots=len(candidates), matched=matched, unmapped=len(candidates) - matched): return False
     for col, counts in stats["privacy_counts"].items():
         nonempty = sum(not _blank(r[col]) for r in candidates)
@@ -546,11 +551,12 @@ def _check_mapping(table, snapshot):
     entry = snapshot["tables"][table]; spec = _SPECS[table]; fields = {}; causes = []
     candidates, _, _ = _candidates(entry, table)
     sources = {r["source_row_number"]: r for r in candidates}
+    mappings = course_mapping.source_mappings(snapshot["dataset_id"], spec[1], _MAPPING)
     for col in spec[7].split():
         slots = len(candidates); matched = 0
         for row in entry["dwd"]["rows"]:
             source = sources.get(row["source_row_number"])
-            if source is not None and source[col] in _MAPPING[col] and row[col] == _MAPPING[col][source[col]]:
+            if source is not None and source[col] in mappings[col] and row[col] == mappings[col][source[col]]:
                 matched += 1
         matched = min(matched, slots)
         fields[col] = dict(slots=slots, matched=matched, unmapped=slots - matched, match_ratio=matched / slots if slots else None)
@@ -558,23 +564,47 @@ def _check_mapping(table, snapshot):
     return _result(table, "MAPPING", dict(fields=fields), causes)
 
 
-def _privacy_key(snapshot):
+def _read_course_privacy_key():
+    path = Path.home() / ".medical-ops-analytics-course.key"
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, "rb") as stream:
+            info = os.fstat(stream.fileno())
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
+                    or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1):
+                _fail("DWD_PRIVACY_KEY_INVALID")
+            raw = stream.read(129)
+        if len(raw) > 128:
+            _fail("DWD_PRIVACY_KEY_INVALID")
+        return raw.strip()
+    except FileNotFoundError:
+        _fail("DWD_PRIVACY_KEY_MISSING")
+    except OSError:
+        _fail("DWD_PRIVACY_KEY_INVALID")
+
+
+def _privacy_key(snapshot, *, env=None):
     raw = os.environ.get("DWD_PRIVACY_KEY")
-    if not raw:
+    key_id = os.environ.get("DWD_PRIVACY_KEY_ID")
+    if (raw is None and key_id is None and env == "dev" and snapshot["dataset_id"] == COURSE_DATASET
+            and snapshot["privacy_key_id"] == _COURSE_KEY_ID):
+        raw = _read_course_privacy_key()
+        key_id = _COURSE_KEY_ID
+    if not raw or not key_id:
         _fail("DWD_PRIVACY_KEY_MISSING")
     try:
         key = base64.b64decode(raw, validate=True)
-        if len(key) != 32 or not _id(os.environ.get("DWD_PRIVACY_KEY_ID"), 64):
+        if len(key) != 32 or not _id(key_id, 64):
             _fail("DWD_PRIVACY_KEY_INVALID")
     except (ValueError, TypeError):
         _fail("DWD_PRIVACY_KEY_INVALID")
-    if os.environ["DWD_PRIVACY_KEY_ID"] != snapshot["privacy_key_id"]:
+    if key_id != snapshot["privacy_key_id"]:
         _fail("DQ_SNAPSHOT_MISMATCH")
     return key
 
 
-def _check_privacy(table, snapshot):
-    entry = snapshot["tables"][table]; spec = _SPECS[table]; key = _privacy_key(snapshot)
+def _check_privacy(table, snapshot, *, env=None):
+    entry = snapshot["tables"][table]; spec = _SPECS[table]; key = _privacy_key(snapshot, env=env)
     forbidden = len(set(entry["dwd"]["columns"]) - set(_COMMON + spec[4].split()))
     suppression = 0; shape = 0; mismatch = 0
     sources = {r["source_row_number"]: r for r in entry["source"]["rows"]}
@@ -691,11 +721,29 @@ def _write_report(report):
                     if old_stat.st_size > 2_000_000:
                         _fail("DQ_REPORT_IDENTITY_CONFLICT")
                     previous = json.load(stream)
-                    identity = ("schema_version", "env", "dataset_id", "batch_date", "rules_version", "mapping_version", "privacy_key_id")
+                    identity = ("schema_version", "env", "dataset_id", "batch_date", "rules_version", "privacy_key_id")
                     if not isinstance(previous, dict) or any(previous.get(k) != report[k] for k in identity):
+                        _fail("DQ_REPORT_IDENTITY_CONFLICT")
+                    if previous.get("mapping_version") != report["mapping_version"] and not (
+                        report["dataset_id"] == COURSE_DATASET and previous.get("gate_status") == "FAIL"
+                        and previous.get("mapping_version") == _MAPPING_VERSION
+                        and report["mapping_version"] == course_mapping.COURSE_VERSION
+                    ):
                         _fail("DQ_REPORT_IDENTITY_CONFLICT")
                     if str(UUID(previous.get("clean_run_id"))) != previous.get("clean_run_id"):
                         _fail("DQ_REPORT_IDENTITY_CONFLICT")
+                    if (report["gate_status"] == "PASS" and stat.S_IMODE(old_stat.st_mode) == 0o600
+                            and old_stat.st_uid == os.geteuid()):
+                        timestamp = previous.get("generated_at")
+                        try:
+                            valid_time = isinstance(timestamp, str) and datetime.fromisoformat(timestamp).tzinfo is not None
+                        except ValueError:
+                            valid_time = False
+                        if valid_time:
+                            candidate = dict(report, generated_at=timestamp)
+                            if json.dumps(candidate, sort_keys=True) == json.dumps(previous, sort_keys=True):
+                                report["generated_at"] = timestamp
+                                return
                 except OdsError:
                     raise
                 except Exception:
@@ -774,7 +822,23 @@ def _report_batch_day(value):
 
 @_safe
 def generate_quality_report(batch_date, *, dataset_id=None, env="dev"):
-    batch_date = _report_batch_day(batch_date).isoformat()
+    selector = batch_date.strip() if isinstance(batch_date, str) else None
+    if selector in (COURSE_DATASET, "latest"):
+        if selector == COURSE_DATASET:
+            if dataset_id is not None and dataset_id != COURSE_DATASET:
+                raise _ReportArgumentError("DATASET_SELECTOR_INVALID")
+            dataset_id = COURSE_DATASET
+        batch_date = None
+    else:
+        try:
+            batch_date = _report_batch_day(batch_date).isoformat()
+        except _ReportArgumentError as error:
+            if (error.reason != "BATCH_DATE_LABEL_NOT_CALENDAR" or env != "dev"
+                    or dataset_id not in (None, COURSE_DATASET)
+                    or re.search(r"[0-9]{4}[-_. ]?[0-9]{1,2}[-_. ]?[0-9]{1,2}", selector)):
+                raise
+            dataset_id = COURSE_DATASET
+            batch_date = None
     if env not in ("dev", "test"):
         raise _ReportArgumentError("REPORT_ENV_INVALID")
     if dataset_id is not None and not _id(dataset_id):
@@ -809,7 +873,7 @@ def generate_quality_report(batch_date, *, dataset_id=None, env="dev"):
             elif kind == "VOLUME_WAVE": result = _volume_wave(table, entry, snapshot, config)
             elif kind == "RECONCILE": result = check_reconcile(entry["source"]["table"], table, entry["audit"], snapshot=snapshot)
             elif kind == "MAPPING": result = _check_mapping(table, snapshot)
-            else: result = _check_privacy(table, snapshot)
+            else: result = _check_privacy(table, snapshot, env=env)
             if result["code"] == "STALE": error_code = "DQ_STALE"
         except Exception as error:
             code = error.code if isinstance(error, OdsError) and error.code in _ERRORS else "DQ_RULE_ERROR"

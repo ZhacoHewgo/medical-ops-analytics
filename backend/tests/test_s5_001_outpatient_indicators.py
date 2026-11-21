@@ -4,6 +4,7 @@ from decimal import Decimal
 import subprocess
 import sys
 
+import pandas as pd
 import pytest
 
 from sql_fixture import execute_schema
@@ -142,6 +143,93 @@ def test_dataframe_keeps_exact_integer_values_and_missing_reason(monkeypatch):
     result = indicators.calc_outpatient_volume(JAN, JAN, "day")
     assert result["metric_value"].tolist() == [large, None]
     assert result["null_reason"].tolist() == [None, "ADS_NOT_PUBLISHED"]
+
+
+def test_course_calculators_default_to_daily_range(monkeypatch):
+    calls = []
+
+    def capture(start, end, grain, *args, **kwargs):
+        calls.append((start, end, grain))
+        return ([], {}) if kwargs.get("calculation") is None else []
+
+    monkeypatch.setattr(indicators, "_run", capture)
+    for calculate in (indicators.calc_outpatient_volume, indicators.calc_bed_usage_rate):
+        assert calculate(JAN).empty
+        assert calculate(JAN, FEB).empty
+    assert calls == [(JAN, JAN, "day"), (JAN, FEB, "day")] * 2
+
+
+def test_direct_indicator_calculations_use_supplied_input_without_database(monkeypatch):
+    def unreachable(*args, **kwargs):
+        pytest.fail("direct calculation reached the database")
+
+    monkeypatch.setattr(indicators, "_run", unreachable)
+    visits = pd.DataFrame({"visit_id": ["A", "A", "B", "C"],
+                           "visit_type": ["OUTPATIENT", "OUTPATIENT", "门诊", "INPATIENT"]})
+    assert indicators.calc_outpatient_volume(visits) == 2
+    assert indicators.calc_outpatient_volume(pd.DataFrame({"outpatient_visits": [12, 8]})) == 20
+    assert indicators.calc_outpatient_volume(pd.DataFrame({"outpatient_visits": [12, None]})) is None
+    assert indicators.calc_outpatient_volume(visits.iloc[:0]) is None
+    beds = pd.DataFrame({"occupied_bed_days": [1, 9], "available_bed_days": [2, 10]})
+    assert indicators.calc_bed_usage_rate(beds) == pytest.approx(83.333333)
+    assert indicators.calc_bed_usage_rate(45, 60) == 75.0
+    assert indicators.calc_bed_usage_rate(0, 60) == 0.0
+    assert indicators.calc_bed_usage_rate(0, 0) is None
+    assert indicators.calc_bed_usage_rate(45, None) is None
+    with pytest.raises(sources.OdsError, match="N10_MEASURE_INVALID"):
+        indicators.calc_bed_usage_rate(-1, 60)
+
+
+def test_indicator_source_keeps_privacy_config_errors_distinct(monkeypatch):
+    def verify(*args, **kwargs):
+        raise sources.OdsError("DWD_PRIVACY_KEY_MISSING")
+
+    monkeypatch.setattr(build_dwd, "_lock_inputs", lambda *args: ("SIM", JAN, None))
+    monkeypatch.setattr(indicators, "_report", lambda *args: {})
+    monkeypatch.setattr(build_dwd, "verify_build_freshness_from_cursor", verify)
+    with pytest.raises(sources.OdsError, match="^DWD_PRIVACY_KEY_MISSING$"):
+        indicators._source(None, "SIM", JAN, "dev")
+
+
+def test_backfill_reports_requested_and_certified_dates_without_writing(monkeypatch):
+    from unittest.mock import MagicMock
+
+    db = MagicMock()
+    monkeypatch.setattr(indicators, "connect_database", lambda: db)
+    report = {"effective_start": "2025-04-01", "effective_end": "2025-06-30"}
+    monkeypatch.setattr(indicators, "_source", lambda *args: ("SIM", date(2025, 6, 30), report, "run"))
+    span = (date(2025, 1, 1), date(2025, 1, 3))
+    with pytest.raises(sources.OdsError) as raised:
+        indicators._transaction(span, "day", "SIM", None, "dev", write=True)
+    assert raised.value.code == "N10_RANGE_OUTSIDE_BUILD"
+    assert str(raised.value) == ("N10_RANGE_OUTSIDE_BUILD: requested=2025-01-01..2025-01-03, "
+                                 "available=2025-04-01..2025-06-30")
+    db.rollback.assert_called_once()
+    db.commit.assert_not_called()
+
+
+def test_rerun_disjoint_range_returns_same_no_data_result_without_writes(monkeypatch):
+    from unittest.mock import MagicMock
+
+    db = MagicMock()
+    monkeypatch.setattr(indicators, "connect_database", lambda: db)
+    monkeypatch.setattr(indicators, "_scope", lambda *args: None)
+    monkeypatch.setattr(indicators.scheduler, "_lock", lambda *args: MagicMock())
+    report = {"effective_start": "2025-04-01", "effective_end": "2025-06-30"}
+    monkeypatch.setattr(indicators, "_source", lambda *args: ("SIM", date(2025, 6, 30), report, "run"))
+
+    first = indicators.rerun(("2024-01-01", "2024-01-02"))
+    assert first == indicators.rerun(("2024-01-01", "2024-01-02"))
+    assert first == {
+        "status": "NO_DATA", "code": "N10_RANGE_OUTSIDE_BUILD", "rows": 0, "granularity": "day",
+        "start_date": "2024-01-01", "end_date": "2024-01-02",
+        "available_start_date": "2025-04-01", "available_end_date": "2025-06-30",
+    }
+    assert db.rollback.call_count == 2
+    db.commit.assert_not_called()
+    assert db.cursor.return_value.__enter__.return_value.execute.call_count == 4
+    with pytest.raises(sources.OdsError, match="N10_RANGE_OUTSIDE_BUILD"):
+        indicators.rerun(("2025-03-31", "2025-04-01"))
 
 
 def seed_rows(name):

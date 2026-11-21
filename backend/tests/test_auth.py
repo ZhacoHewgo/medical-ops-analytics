@@ -6,7 +6,7 @@ import pytest
 from fastapi import Depends
 from fastapi.testclient import TestClient
 
-from app.core import deps, security
+from app.core import config, deps, security
 from app.main import create_app
 from etl.config import source_config as sources
 
@@ -14,6 +14,13 @@ from etl.config import source_config as sources
 LOGIN = "/api/auth/login"
 USERS = "/api/auth/users"
 PASSWORD = "Synthetic-only!123"
+
+
+@pytest.fixture(autouse=True)
+def private_jwt_file(monkeypatch, tmp_path):
+    path = tmp_path / "jwt-secret"
+    monkeypatch.setattr(config, "_JWT_SECRET_FILE", path)
+    return path
 
 
 def test_auth_routes_are_opt_in(monkeypatch, aggregate_path):
@@ -30,6 +37,7 @@ def test_auth_with_missing_signing_key_returns_unavailable(monkeypatch):
     with TestClient(create_app()) as client:
         response = client.post(LOGIN, json={"username": "synthetic_user", "password": PASSWORD})
         assert response.status_code == 503
+        assert response.headers.get("X-Auth-Unavailable") == security.JWT_SECRET_MISSING
         assert response.json()["data"] is None and PASSWORD not in response.text
 
 
@@ -301,14 +309,41 @@ def test_login_reports_unavailable_when_account_store_fails(monkeypatch):
     assert opened == ["AUTH_DB_UNAVAILABLE"]
 
 
-def test_missing_signing_key_fails_before_account_lookup(monkeypatch):
+def test_short_signing_key_fails_before_account_lookup(monkeypatch):
     _, opened = probe_store(monkeypatch, account_row())
-    response = do_login(probe_client(monkeypatch, secret=None))
+    response = do_login(probe_client(monkeypatch, secret="p" * 31))
     assert response.status_code == 503
     assert opened == []
 
 
-@pytest.mark.parametrize("secret", ["", "p" * 31])
+def test_private_jwt_key_signs_and_verifies_without_environment(monkeypatch, private_jwt_file):
+    monkeypatch.delenv("JWT_SECRET_KEY", raising=False)
+    private_jwt_file.write_text(token_urlsafe(48) + "\n", encoding="ascii")
+    private_jwt_file.chmod(0o600)
+    account = probe_account()
+    token = security.create_access_token(account)
+    assert security.decode_token(token)["user_id"] == account.user_id
+
+    monkeypatch.setenv("JWT_SECRET_KEY", token_urlsafe(48))
+    with pytest.raises(security.HTTPException) as error:
+        security.decode_token(token)
+    assert error.value.status_code == 401
+
+
+@pytest.mark.parametrize("kind", ["wide_permissions", "symlink"])
+def test_private_jwt_key_rejects_unsafe_files(monkeypatch, private_jwt_file, kind):
+    monkeypatch.delenv("JWT_SECRET_KEY", raising=False)
+    target = private_jwt_file.with_name("source") if kind == "symlink" else private_jwt_file
+    target.write_text(token_urlsafe(48), encoding="ascii")
+    target.chmod(0o600 if kind == "symlink" else 0o644)
+    if kind == "symlink":
+        private_jwt_file.symlink_to(target)
+    with pytest.raises(security.HTTPException) as error:
+        security.token_config()
+    assert error.value.headers["X-Auth-Unavailable"] == security.JWT_SECRET_MISSING
+
+
+@pytest.mark.parametrize("secret", ["   ", "p" * 31])
 def test_short_signing_key_reports_unavailable(monkeypatch, secret):
     _, opened = probe_store(monkeypatch, account_row())
     assert do_login(probe_client(monkeypatch, secret=secret)).status_code == 503
@@ -347,6 +382,34 @@ def test_current_user_requires_token_and_returns_scope(monkeypatch):
     token = do_login(client).json()["data"]["access_token"]
     assert client.get("/__probe", headers={"Authorization": f"Bearer {token}"}).json() == {
         "user_id": 7, "role": "department", "department": "SIM_DEPT_03"}
+
+
+def test_mapping_token_without_revision_can_be_verified_but_cannot_authenticate(monkeypatch):
+    client = probe_client(monkeypatch)
+    _, opened = probe_store(monkeypatch, account_row())
+    token = security.create_access_token({"user_id": 7, "role": "analyst", "department": None})
+    assert security.decode_token(token)["user_id"] == 7
+    assert client.get("/__probe", headers={"Authorization": f"Bearer {token}"}).status_code == 401
+    assert opened == []
+
+
+@pytest.mark.parametrize("identity", [{"sub": "synthetic-user"}, {"username": "synthetic-user"},
+                                       {"user_id": "synthetic-user"}])
+def test_subject_only_token_verifies_but_cannot_authenticate(monkeypatch, identity):
+    client = probe_client(monkeypatch)
+    _, opened = probe_store(monkeypatch, account_row())
+    token = security.create_access_token(identity)
+    assert security.decode_token(token)["sub"] == "synthetic-user"
+    assert client.get("/__probe", headers={"Authorization": f"Bearer {token}"}).status_code == 401
+    assert opened == []
+
+
+def test_mapping_token_with_current_account_revision_keeps_existing_contract(monkeypatch):
+    client = probe_client(monkeypatch)
+    account = probe_account()
+    probe_store(monkeypatch, account_row())
+    token = security.create_access_token(dict(account.public(), revision=account.revision.isoformat()))
+    assert client.get("/__probe", headers={"Authorization": f"Bearer {token}"}).status_code == 200
 
 
 def test_current_user_rejects_revoked_account_and_stale_revision(monkeypatch):
@@ -444,8 +507,8 @@ def test_current_user_unavailable_category_is_fixed(monkeypatch, error, category
 def test_unavailable_category_is_logged(monkeypatch, caplog):
     probe_store(monkeypatch, account_row())
     with caplog.at_level("WARNING", logger="app.auth"):
-        do_login(probe_client(monkeypatch, secret=None))
-    assert "authentication unavailable: configuration_secret_missing" in caplog.text
+        do_login(probe_client(monkeypatch, secret="s" * 31))
+    assert "authentication unavailable: configuration_secret_too_short" in caplog.text
 
 
 def test_unavailable_exposes_no_store_internals(monkeypatch):
@@ -532,10 +595,8 @@ def test_expire_minutes_reports_fixed_category(monkeypatch, minutes, category):
 
 def test_secret_is_reported_before_expire_minutes(monkeypatch):
     probe_store(monkeypatch, account_row())
-    response = do_login(probe_client(monkeypatch, secret=None, minutes="abc"))
-    assert response.status_code == 503
-    assert response.headers["X-Auth-Unavailable"] == security.JWT_SECRET_MISSING
     response = do_login(probe_client(monkeypatch, secret="p" * 31, minutes="abc"))
+    assert response.status_code == 503
     assert response.headers["X-Auth-Unavailable"] == security.JWT_SECRET_SHORT
 
 

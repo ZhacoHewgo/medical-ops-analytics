@@ -1,7 +1,8 @@
 """W8 pure contracts; real execution belongs to coordinator."""
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 import hashlib
+import pandas as pd
 import pytest
 from etl.jobs import build_dwd as build
 
@@ -11,6 +12,19 @@ def test_schema_grains():
     assert len(build.VISIT_COLUMNS) == 21
     assert len(build.AUDIT_COLUMNS) == 18
     assert len(build.new_ddl()) == 2
+
+
+def test_course_dimensions_cover_cleaning_mappings_without_invented_attributes():
+    from etl.config import course_mapping
+    from etl.config.source_config import COURSE_DATASET
+    from etl.jobs import build_dims as dims
+
+    rows = dims._dimension_range(COURSE_DATASET, '2025-04-01', '2025-06-30')['rows']
+    assert {row['dept_code'] for row in rows['dim_department']} == set(course_mapping.DEPARTMENTS)
+    assert {row['fee_type_code'] for row in rows['dim_fee_type']} == set(course_mapping.FEE_TYPES.values())
+    assert {row['disease_code'] for row in rows['dim_disease']} == set(course_mapping.DISEASE_CODES)
+    assert all(row['icd_code'] is None and row['drg_group'] is None for row in rows['dim_disease'])
+    assert {row['mapping_version'] for items in rows.values() for row in items} == {course_mapping.COURSE_VERSION}
 
 def test_old_prefix_mutation(tmp_path):
     raw = build.LEGACY_SQL.read_bytes()
@@ -88,6 +102,82 @@ def test_range_rejects_partial_before_writes():
     assert build.full_range(None,None,'2024-01-01','2024-02-01') == ('2024-01-01','2024-02-01')
     with pytest.raises(build.OdsError,match='^N8_RANGE_NOT_FULL$'):
         build.full_range('2024-01-02','2024-02-01','2024-01-01','2024-02-01')
+
+
+@pytest.mark.parametrize('scope', ['VISIT', 'CHARGE'])
+def test_course_build_date_arguments(monkeypatch, scope):
+    from etl.jobs import clean_dwd
+
+    def capture(start, end, **options):
+        assert options == dict(dataset_id='SIM', batch_date='2024-01-01', env='test', scope=scope)
+        return start, end
+
+    monkeypatch.setattr(build, '_public_partial', capture)
+    builder = getattr(clean_dwd, f'build_dwd_{scope.lower()}')
+    options = dict(dataset_id='SIM', batch_date='2024-01-01', env='test')
+    start, end = '2024-01-01', '2024-02-01'
+    assert builder(start, **options) == (start, start)
+    assert builder(start, end, **options) == (start, end)
+    assert builder(None, None, **options) == (None, None)
+    assert builder(start, None, **options) == (start, None)
+    assert builder(date.fromisoformat(start), **options) == (start, start)
+    assert builder((date.fromisoformat(start), datetime.fromisoformat(end)), **options) == (start, end)
+    assert builder([start, end], **options) == (start, end)
+
+
+def test_course_visit_frame_builds_details_without_database(monkeypatch):
+    from etl.jobs.clean_dwd import build_dwd_visit
+
+    def unexpected_database(*args, **kwargs):
+        pytest.fail('DataFrame build called the database path')
+
+    monkeypatch.setattr(build, '_public_partial', unexpected_database)
+    source = pd.DataFrame([
+        {'visit_id': 1, 'visit_type': 'OUTPATIENT', 'visit_date': '2024-01-01', 'fee_amount': '9.00'},
+        {'visit_id': 2, 'visit_type': 'INPATIENT', 'admit_date': '2024-01-01', 'discharge_date': '2024-01-03',
+         'total_fee': '12.00', 'drug_fee': '4.00', 'consumable_fee': '3.00', 'patient_name': 'SIM_PRIVATE'},
+    ])
+    result = build_dwd_visit(source)
+    assert result['visit_id'].tolist() == [1, 2]
+    assert result['visit_id'].is_unique
+    assert result.loc[1, 'calendar_span_days'] == 2
+    assert result.loc[1, 'residual_fee'] == Decimal('5.00')
+    assert 'patient_name' not in result
+    assert 'residual_fee' not in source
+    with pytest.raises(build.OdsError, match='^N8_VISIT_AMBIGUOUS$'):
+        build_dwd_visit(pd.concat([source, source]))
+
+
+def test_course_charge_frame_keeps_unique_charge_rows_and_types():
+    from etl.jobs.clean_dwd import build_dwd_charge
+
+    result = build_dwd_charge(pd.DataFrame([
+        {'charge_id': 'C1', 'visit_id': 'V1', 'fee_date': '2024-01-02', 'amount': '4.75', 'phone': 'SIM_PRIVATE'},
+        {'charge_id': 'C2', 'visit_id': 'V1', 'fee_date': '2024-01-02', 'amount': '2.00'},
+    ]))
+    assert result['charge_id'].tolist() == ['C1', 'C2']
+    assert result['amount'].tolist() == [Decimal('4.75'), Decimal('2.00')]
+    assert result['fee_date'].tolist() == [date(2024, 1, 2)] * 2
+    assert 'phone' not in result
+
+
+@pytest.mark.parametrize('start,end,batch,detail', [
+    ([], [], None, 'DATE_RANGE_INVALID_TYPE (list, list)'),
+    ('2024-01-01', None, None, 'DATE_RANGE_INCOMPLETE'),
+    ('2024-01-02', '2024-01-01', None, 'DATE_RANGE_INVALID'),
+    ('2024-01-01', '2024-01-01', 'course-check', 'BATCH_DATE_INVALID'),
+])
+def test_public_build_distinguishes_date_argument_errors(start, end, batch, detail):
+    with pytest.raises(build.OdsError) as error:
+        build._public_partial(start, end, dataset_id=None, batch_date=batch, env='dev', scope='VISIT')
+    assert str(error.value) == f'N8_ARGUMENTS_INVALID: {detail}'
+
+
+def test_public_build_preserves_database_config_error(monkeypatch):
+    monkeypatch.setenv('ODS_DATABASE_URL', 'SIM_INVALID_URL')
+    with pytest.raises(build.OdsError, match='^ODS_DATABASE_URL_INVALID$'):
+        build._public_partial('2024-01-01', '2024-01-01', dataset_id=None,
+                              batch_date=None, env='dev', scope='VISIT')
 
 
 def test_transaction_typed_retry_and_commit_unknown():

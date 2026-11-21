@@ -7,7 +7,9 @@ from decimal import Decimal, Context, localcontext
 import hashlib
 import json
 
+from etl.config import course_mapping
 from etl.config.source_config import PROJECT_ROOT, OdsError
+from etl.jobs.quality_check import PRIVACY_KEY_ERRORS
 
 LEGACY_SQL = PROJECT_ROOT / 'sql/dwd/dwd_tables.sql'
 MODEL_VERSION = 'node08-model-v1'
@@ -85,31 +87,90 @@ def visit_candidates(outpatients, inpatients):
         for row in source:
             if kind == 'OUTPATIENT' and row['visit_type'] != kind:
                 raise OdsError('N8_VISIT_REFERENCE_INVALID') from None
-            item = {c: row[c] for c in ('dataset_id','visit_id','source_row_number','source_batch_date','etl_batch_date','etl_load_time','patient_key','dept_code','gender','age')}
-            key = (item['dataset_id'],kind,item['visit_id'])
+            key = (row['dataset_id'], kind, row['visit_id'])
             if key in seen:
                 raise OdsError('N8_VISIT_AMBIGUOUS') from None
             seen.add(key)
-            inpatient = kind == 'INPATIENT'
-            total = row['total_fee'] if inpatient else row['fee_amount']
-            drug = row['drug_fee'] if inpatient else None
-            consumable = row['consumable_fee'] if inpatient else None
-            residual = None
-            if inpatient and all(v is not None for v in (total,drug,consumable)):
-                if any(type(v) is not Decimal or not v.is_finite() for v in (total,drug,consumable)):
-                    raise OdsError('N8_AMOUNT_OVERFLOW') from None
-                residual = _residual(total,drug,consumable)
-            admit = row['admit_date'] if inpatient else None
-            discharge = row['discharge_date'] if inpatient else None
-            span = (discharge-admit).days if admit is not None and discharge is not None else None
-            if span is not None and span < 0:
-                raise OdsError('N8_DATE_INVALID') from None
-            item.update(visit_type=kind,visit_date=admit if inpatient else row['visit_date'],admit_date=admit,
-                        discharge_date=discharge,disease_code=row['disease_code'] if inpatient else None,
-                        source_stay_days=row['stay_days'] if inpatient else None,source_total_fee=total,
-                        source_drug_fee=drug,source_consumable_fee=consumable,residual_fee=residual,calendar_span_days=span)
-            result.append(item)
+            result.append(_visit_detail(row, kind))
     return sorted(result,key=lambda row: tuple(row[c].encode('utf-8') for c in ('dataset_id','visit_type','visit_id')))
+
+
+def _visit_detail(row, kind):
+    item = {column: row[column] for column in (
+        'dataset_id', 'visit_id', 'source_row_number', 'source_batch_date', 'etl_batch_date',
+        'etl_load_time', 'patient_key', 'dept_code', 'gender', 'age')}
+    inpatient = kind == 'INPATIENT'
+    total = row['total_fee'] if inpatient else row['fee_amount']
+    drug = row['drug_fee'] if inpatient else None
+    consumable = row['consumable_fee'] if inpatient else None
+    residual = None
+    if inpatient and all(value is not None for value in (total, drug, consumable)):
+        if any(type(value) is not Decimal or not value.is_finite() for value in (total, drug, consumable)):
+            raise OdsError('N8_AMOUNT_OVERFLOW') from None
+        residual = _residual(total, drug, consumable)
+    admit = row['admit_date'] if inpatient else None
+    discharge = row['discharge_date'] if inpatient else None
+    span = (discharge - admit).days if admit is not None and discharge is not None else None
+    if span is not None and span < 0:
+        raise OdsError('N8_DATE_INVALID') from None
+    item.update(visit_type=kind, visit_date=admit if inpatient else row['visit_date'],
+                admit_date=admit, discharge_date=discharge,
+                disease_code=row['disease_code'] if inpatient else None,
+                source_stay_days=row['stay_days'] if inpatient else None, source_total_fee=total,
+                source_drug_fee=drug, source_consumable_fee=consumable, residual_fee=residual,
+                calendar_span_days=span)
+    return item
+
+
+def build_detail_frame(frame, *, dataset_id, scope):
+    import pandas as pd
+    from etl.jobs import clean_dwd as clean
+
+    charge = scope == 'CHARGE'
+    key = 'charge_id' if charge else 'visit_id'
+    charge_columns = clean.TABLES['dwd_charge_detail']['columns']
+    columns = charge_columns if charge else (*VISIT_COLUMNS, 'fee_amount', 'total_fee',
+                                             'drug_fee', 'consumable_fee', 'stay_days')
+    if key not in frame or not frame.columns.is_unique:
+        raise OdsError('N8_ARGUMENTS_INVALID', detail='FRAME_KEY_REQUIRED') from None
+    projected = frame.reindex(columns=columns)
+    rows = projected.astype(object).where(projected.notna(), None).to_dict('records')
+    seen = set()
+    result = []
+    for row in rows:
+        if not clean._valid_id(row[key], integer=True):
+            raise OdsError('N8_ARGUMENTS_INVALID', detail='FRAME_KEY_INVALID') from None
+        if row['dataset_id'] is None:
+            row['dataset_id'] = dataset_id
+        if (row['dataset_id'] is not None and not clean._valid_id(row['dataset_id'])) or (
+                dataset_id is not None and row['dataset_id'] != dataset_id):
+            raise OdsError('N8_ARGUMENTS_INVALID', detail='DATASET_ID_INVALID') from None
+        kind = row['visit_type']
+        if not charge and kind is None and row['admit_date'] is not None:
+            kind = 'INPATIENT'
+        if kind not in (None, 'OUTPATIENT', 'INPATIENT'):
+            raise OdsError('N8_VISIT_REFERENCE_INVALID') from None
+        identity = (row['dataset_id'], row[key]) if charge else (row['dataset_id'], kind, row[key])
+        if identity in seen:
+            raise OdsError('N8_VISIT_AMBIGUOUS' if not charge else 'N8_RECONCILE_FAILED') from None
+        seen.add(identity)
+        for column in clean.DATES.intersection(row):
+            value = row[column]
+            if isinstance(value, datetime):
+                row[column] = value.date()
+            elif value is not None and type(value) is not date:
+                try:
+                    row[column] = clean._day(value)
+                except ValueError:
+                    raise OdsError('N8_DATE_INVALID') from None
+        for column in (clean.MONEY | {'stay_days'}).intersection(row):
+            if row[column] is not None:
+                try:
+                    row[column] = clean._decimal(str(row[column]), stay=column == 'stay_days')
+                except ValueError:
+                    raise OdsError('N8_AMOUNT_OVERFLOW') from None
+        result.append(row if charge else _visit_detail(row, kind))
+    return pd.DataFrame(result, columns=charge_columns if charge else VISIT_COLUMNS)
 
 
 def charge_candidates(charges, visits):
@@ -333,7 +394,7 @@ def _previous_certificate(cursor,dataset,batch,env,audit_rows=None,dim_rows=None
         try:
             if len(rows)!=1: raise ValueError
             a=rows[0]
-            if a['dataset_id']!=dataset or a['model_version']!=MODEL_VERSION or a['mapping_version']!=dims.MAPPING_VERSION: raise ValueError
+            if a['dataset_id']!=dataset or a['model_version']!=MODEL_VERSION or a['mapping_version']!=course_mapping.version(dataset): raise ValueError
             for key in ('build_run_id','clean_run_id'):
                 if type(a[key]) is not str or str(UUID(a[key]))!=a[key]: raise ValueError
             for key in ('batch_date','effective_start','effective_end'):
@@ -470,13 +531,31 @@ def _public_partial(start,end,*,dataset_id,batch_date,env,scope):
     from etl.jobs import build_dims as dims
     from etl.scheduler import scheduler
     from etl.config.source_config import database_options
-    try:
-        if type(env) is not str or env not in ('dev','test') or (dataset_id is not None and not dims.quality._id(dataset_id)): raise ValueError
-        if batch_date is not None: dims._day(batch_date)
-        if start is not None or end is not None:
-            if start is None or end is None or dims._day(start)>dims._day(end): raise ValueError
-        if database_options()['database']!=('hospital_test' if env=='test' else 'hospital'): raise ValueError
-    except Exception: raise OdsError('N8_ARGUMENTS_INVALID') from None
+    if type(env) is not str or env not in ('dev', 'test'):
+        raise OdsError('N8_ARGUMENTS_INVALID', detail='ENV_INVALID') from None
+    if dataset_id is not None and not dims.quality._id(dataset_id):
+        raise OdsError('N8_ARGUMENTS_INVALID', detail='DATASET_ID_INVALID') from None
+    if batch_date is not None:
+        try:
+            dims._day(batch_date)
+        except OdsError:
+            raise OdsError('N8_ARGUMENTS_INVALID', detail='BATCH_DATE_INVALID') from None
+    if start is not None or end is not None:
+        if start is None or end is None:
+            raise OdsError('N8_ARGUMENTS_INVALID', detail='DATE_RANGE_INCOMPLETE') from None
+        if type(start) is not str or type(end) is not str:
+            allowed_names = {'str', 'int', 'float', 'bool', 'dict', 'tuple', 'list', 'Series', 'DataFrame', 'ndarray'}
+            names = [type(value).__name__ for value in (start, end)]
+            kinds = ', '.join(name if name in allowed_names else 'other' for name in names)
+            raise OdsError('N8_ARGUMENTS_INVALID', detail=f'DATE_RANGE_INVALID_TYPE ({kinds})') from None
+        try:
+            start_day, end_day = dims._day(start), dims._day(end)
+        except OdsError:
+            raise OdsError('N8_ARGUMENTS_INVALID', detail='DATE_RANGE_INVALID') from None
+        if start_day > end_day:
+            raise OdsError('N8_ARGUMENTS_INVALID', detail='DATE_RANGE_INVALID') from None
+    if database_options()['database'] != ('hospital_test' if env == 'test' else 'hospital'):
+        raise OdsError('N8_ARGUMENTS_INVALID', detail='DATABASE_ENV_MISMATCH') from None
     if scheduler._CURRENT.get() is not None: raise OdsError('N8_RUN_CONTEXT_ACTIVE') from None
     try:
         with scheduler._lock(env,'run'):
@@ -536,7 +615,7 @@ def _validate_report(report):
     from etl.jobs import build_dims as dims
     try:
         if type(report) is not dict or set(report)!=_REPORT_KEYS: raise ValueError
-        if report['schema_version']!=SCHEMA_VERSION or report['model_version']!=MODEL_VERSION or report['mapping_version']!=dims.MAPPING_VERSION: raise ValueError
+        if report['schema_version']!=SCHEMA_VERSION or report['model_version']!=MODEL_VERSION or report['mapping_version']!=course_mapping.version(report['dataset_id']): raise ValueError
         if report['env'] not in ('dev','test') or not dims.quality._id(report['dataset_id']): raise ValueError
         if report['build_scope']!='ALL' or report['gate_status']!='PASS' or report['code']!='N8_BUILD_OK': raise ValueError
         for k in ('build_run_id','clean_run_id'):
@@ -715,7 +794,7 @@ def verify_build_freshness_from_cursor(cursor,*,dataset_id,batch_date,env,report
         if report['mapping_version']!=a['mapping_version'] or report['privacy_key_id']!=a['privacy_key_id']: raise ValueError
         return dict(dataset_id=dataset_id,build_run_id=a['build_run_id'],clean_run_id=a['clean_run_id'],batch_date=batch_date,gate_status='PASS',hashes=hashes)
     except OdsError as error:
-        raise OdsError(error.code if error.code in SAFE_CODES else 'N8_STALE') from None
+        raise OdsError(error.code if error.code in SAFE_CODES or error.code in PRIVACY_KEY_ERRORS else 'N8_STALE') from None
     except Exception: raise OdsError('N8_STALE') from None
 
 

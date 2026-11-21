@@ -1,4 +1,4 @@
-"""SIM-only four dimensions. No patient rows or exception text in public outputs."""
+"""Four dimensions. No patient rows or exception text in public outputs."""
 from datetime import date, datetime, timedelta, timezone
 from functools import wraps
 import fcntl
@@ -14,18 +14,19 @@ from uuid import UUID
 
 import pymysql
 
-from etl.config.source_config import OdsError, PROJECT_ROOT, SOURCES, database_options
+from etl.config import course_mapping
+from etl.config.source_config import COURSE_DATASET, OdsError, PROJECT_ROOT, SOURCES, database_options
 from etl.jobs import clean_dwd as clean, quality_check as quality
 from etl.scheduler import scheduler
 
 TEMPLATE_VERSION = 'node08-dim-template-v1'
-MAPPING_VERSION = 'node07-sim-mapping-v1'
+MAPPING_VERSION = course_mapping.SIM_VERSION
 SCHEMA_VERSION = 'node08-dimensions-v1'
 SAFE_CODES = frozenset(('N8_ARGUMENTS_INVALID N8_SCHEMA_INVALID N8_MIGRATION_REQUIRED '
     'N8_INPUT_EMPTY N8_DATE_INVALID N8_DATE_RANGE_INVALID N8_DIMENSION_INVALID '
     'N8_UPSTREAM_GATE_FAILED N8_STALE N8_RECONCILE_FAILED N8_TX_RETRYABLE N8_TX_FAILED '
     'N8_ROLLBACK_FAILED N8_COMMIT_UNKNOWN N8_REPORT_PATH_INVALID N8_REPORT_IDENTITY_CONFLICT '
-    'N8_REPORT_WRITE_FAILED N8_RUN_CONTEXT_ACTIVE N8_INTERNAL_ERROR').split())
+    'N8_REPORT_WRITE_FAILED N8_RUN_CONTEXT_ACTIVE N8_INTERNAL_ERROR').split()) | quality.PRIVACY_KEY_ERRORS
 _SPECS = {
     'dim_department': [('dept_code','varchar(64)',False),('dept_name','varchar(128)',False),
         ('hierarchy_level','smallint',True),('parent_dept_code','varchar(64)',True),
@@ -153,8 +154,11 @@ def _calendar_values(day):
 @_safe
 def dimension_rows(snapshot):
     if type(snapshot) is not dict or set(snapshot)!=_SNAPSHOT_KEYS: _fail('N8_ARGUMENTS_INVALID')
+    dataset = snapshot['dataset_id']
+    version = course_mapping.version(dataset)
+    course = dataset == COURSE_DATASET
     if (not quality._id(snapshot['dataset_id']) or not quality._id(snapshot['privacy_key_id'],64)
-            or snapshot['rules_version']!='node07-rules-v1' or snapshot['mapping_version']!=MAPPING_VERSION
+            or snapshot['rules_version']!='node07-rules-v1' or snapshot['mapping_version']!=version
             or type(snapshot['source_fingerprint']) is not str or not re.fullmatch('[0-9a-f]{64}',snapshot['source_fingerprint'])):
         _fail('N8_ARGUMENTS_INVALID')
     try:
@@ -173,21 +177,28 @@ def dimension_rows(snapshot):
     low,high=min(days),max(days); start,end=_shift(low,-1),_shift(high,1)
     rows={t:[] for t in _SPECS}
     def add(table,**values):
-        values=dict(dataset_id=snapshot['dataset_id'],**values,mapping_version=MAPPING_VERSION,scope='SIM')
+        values=dict(dataset_id=dataset,**values,mapping_version=version,scope='COURSE' if course else 'SIM')
         rows[table].append({c:values[c] for c,_,_ in _columns(table)})
-    for i in range(1,5):
-        add('dim_department',dept_code=f'SIM_DEPT_{i:02}',dept_name=f'SIM_科室{i}',hierarchy_level=None,parent_dept_code=None,campus_code=None,campus_name=None,attribute_status='UNKNOWN')
-    for i in range(1,6):
-        add('dim_disease',disease_code=f'SIM_DX_{i:02}',disease_name=f'SIM_病种{i}',icd_code=None,drg_group=None,dip_group=None,attribute_status='UNKNOWN')
-    for code,name,supported in [('SERVICE','SIM_服务费',1),('DRUG','SIM_药品费',1),('CONSUMABLE','SIM_耗材费',1),('REGISTRATION','SIM_挂号费',0),('EXAM','SIM_检查费',0),('TREATMENT','SIM_治疗费',0),('BED','SIM_床位费',0)]:
-        add('dim_fee_type',fee_type_code=code,fee_type_name=name,source_supported=supported,origin='SIM' if supported else 'COURSE_CATALOG')
+    departments = ([(code, code) for code in course_mapping.DEPARTMENTS] if course else
+                   [(f'SIM_DEPT_{i:02}', f'SIM_科室{i}') for i in range(1, 5)])
+    diseases = ([(code, code) for code in course_mapping.DISEASE_CODES] if course else
+                [(f'SIM_DX_{i:02}', f'SIM_病种{i}') for i in range(1, 6)])
+    fees = ([(code, name, 1) for code, name in course_mapping.FEE_NAMES.items()] if course else
+            [('SERVICE','SIM_服务费',1),('DRUG','SIM_药品费',1),('CONSUMABLE','SIM_耗材费',1),('REGISTRATION','SIM_挂号费',0),('EXAM','SIM_检查费',0),('TREATMENT','SIM_治疗费',0),('BED','SIM_床位费',0)])
+    for code, name in departments:
+        add('dim_department',dept_code=code,dept_name=name,hierarchy_level=None,parent_dept_code=None,campus_code=None,campus_name=None,attribute_status='UNKNOWN')
+    for code, name in diseases:
+        add('dim_disease',disease_code=code,disease_name=name,icd_code=None,drg_group=None,dip_group=None,attribute_status='UNKNOWN')
+    for code, name, supported in fees:
+        origin = 'COURSE' if course else ('SIM' if supported else 'COURSE_CATALOG')
+        add('dim_fee_type',fee_type_code=code,fee_type_name=name,source_supported=supported,origin=origin)
     for offset in range((end-start).days+1):
         day=start+timedelta(days=offset)
         add('dim_date',**_calendar_values(day))
     for table in rows: rows[table].sort(key=lambda row:row[_SPECS[table][0][0]])
     return dict(schema_version=SCHEMA_VERSION,dataset_id=snapshot['dataset_id'],template_version=TEMPLATE_VERSION,
                 date_min=low.isoformat(),date_max=high.isoformat(),required_date_start=start.isoformat(),required_date_end=end.isoformat(),rows=rows,
-                row_counts={t:len(v) for t,v in rows.items()},source_completeness=dict(organization_attributes='UNKNOWN',disease_grouping='UNKNOWN',statutory_holidays='UNKNOWN',fee_classification='PARTIAL',unsupported_fee_catalog_rows=4,service_unsplit_rows=None))
+                row_counts={t:len(v) for t,v in rows.items()},source_completeness=dict(organization_attributes='UNKNOWN',disease_grouping='UNKNOWN',statutory_holidays='UNKNOWN',fee_classification='PARTIAL',unsupported_fee_catalog_rows=sum(not supported for _, _, supported in fees),service_unsplit_rows=None))
 
 
 def _hash(value):
@@ -230,7 +241,7 @@ def _dimension_report_identity(report, dataset, *, env=None, batch=None):
         completeness = report['source_completeness']
         expected = dict(organization_attributes='UNKNOWN', disease_grouping='UNKNOWN',
                         statutory_holidays='UNKNOWN', fee_classification='PARTIAL',
-                        unsupported_fee_catalog_rows=4, service_unsplit_rows=0)
+                        unsupported_fee_catalog_rows=0 if dataset == COURSE_DATASET else 4, service_unsplit_rows=0)
         if type(completeness) is not dict or set(completeness) != set(expected):
             _fail('N8_REPORT_IDENTITY_CONFLICT')
         if not quality._count(completeness['service_unsplit_rows']):
@@ -251,7 +262,7 @@ def _certified_prior_rows(report):
         dates['his_outpatient'] = [report['date_min'], report['date_max']]
         prior = dimension_rows(dict(dataset_id=report['dataset_id'], clean_run_id=report['clean_run_id'],
             batch_date=report['batch_date'], rules_version='node07-rules-v1',
-            mapping_version=MAPPING_VERSION, privacy_key_id='SIM-prior-output',
+            mapping_version=course_mapping.version(report['dataset_id']), privacy_key_id='SIM-prior-output',
             source_fingerprint=report['source_fingerprint'], dates=dates))
         if any(report[key] != prior[key] for key in ('date_min', 'date_max', 'required_date_start', 'required_date_end')):
             _fail('N8_DIMENSION_INVALID')
@@ -302,7 +313,7 @@ def _stored_dimension_result(cursor, result):
 def _dimension_range(dataset_id, date_min, date_max):
     low=_day(date_min); high=_day(date_max)
     if low>high: _fail('N8_ARGUMENTS_INVALID')
-    snapshot=dict(dataset_id=dataset_id,clean_run_id='00000000-0000-0000-0000-000000000000',batch_date=date_min,rules_version='node07-rules-v1',mapping_version=MAPPING_VERSION,privacy_key_id='SIM-internal-template',source_fingerprint='0'*64,dates={k:[] for k in DATE_COLUMNS})
+    snapshot=dict(dataset_id=dataset_id,clean_run_id='00000000-0000-0000-0000-000000000000',batch_date=date_min,rules_version='node07-rules-v1',mapping_version=course_mapping.version(dataset_id),privacy_key_id='SIM-internal-template',source_fingerprint='0'*64,dates={k:[] for k in DATE_COLUMNS})
     snapshot['dates']['his_outpatient']=[date_min,date_max]
     return dimension_rows(snapshot)
 
@@ -502,7 +513,7 @@ def _upstream(snapshot,report,env):
             elif kind=='VOLUME_WAVE': rule=quality._volume_wave(table,entry,snapshot,config)
             elif kind=='RECONCILE': rule=quality.check_reconcile(entry['source']['table'],table,entry['audit'],snapshot=snapshot)
             elif kind=='MAPPING': rule=quality._check_mapping(table,snapshot)
-            else: rule=quality._check_privacy(table,snapshot)
+            else: rule=quality._check_privacy(table,snapshot,env=env)
             if rule['code']=='STALE': _fail('N8_STALE')
             if kind=='RECONCILE' and rule['status']!='PASS': _fail('N8_RECONCILE_FAILED')
             rules.append(rule)

@@ -1,5 +1,6 @@
 """Password hashing and access token verification."""
 import logging
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from functools import cache
 from secrets import token_bytes
@@ -92,9 +93,34 @@ def token_config():
 def create_access_token(user) -> str:
     key, minutes = token_config()
     now = int(datetime.now(timezone.utc).timestamp())
+    registered = {"iss": ISSUER, "iat": now, "exp": now + minutes * 60}
+    if isinstance(user, Mapping):
+        user_id = user.get("user_id", user.get("id"))
+        role, department, revision = user.get("role"), user.get("department"), user.get("revision")
+        if revision is None:
+            subject = user.get("sub", user_id if user_id is not None else user.get("username"))
+            if type(subject) is int and subject > 0:
+                subject = str(subject)
+            if not isinstance(subject, str) or not 1 <= len(subject) <= 128 or not subject.strip() or not subject.isprintable():
+                raise ValueError("Invalid token subject: expected sub, user_id, id, or username")
+            claims = {**registered, "sub": subject, "token_use": "subject", "rev": ""}
+            if type(user_id) is int and user_id > 0:
+                claims["user_id"] = user_id
+            if isinstance(role, str) and role.strip():
+                claims["role"] = role
+            claims["department"] = department if isinstance(department, str) else None
+            return jwt.encode(claims, key, algorithm="HS256")
+    else:
+        user_id, role, department, revision = user.user_id, user.role, user.department, user.revision
+    if (type(user_id) is not int or user_id < 1 or not isinstance(role, str) or not role.strip()
+            or department is not None and not isinstance(department, str)):
+        raise ValueError("Invalid token subject")
+    if isinstance(revision, str):
+        revision = datetime.fromisoformat(revision)
+    if not isinstance(revision, datetime):
+        raise ValueError("Invalid account revision")
     return jwt.encode({
-        "iss": ISSUER, "iat": now, "exp": now + minutes * 60, "user_id": user.user_id,
-        "role": user.role, "department": user.department, "rev": user.revision.isoformat(),
+        **registered, "user_id": user_id, "role": role, "department": department, "rev": revision.isoformat(),
     }, key, algorithm="HS256")
 
 
@@ -102,8 +128,12 @@ def decode_token(token: str) -> dict:
     key, _ = token_config()
     try:
         claims = jwt.decode(token, key, algorithms=["HS256"], issuer=ISSUER,
-                            options={"require": ["iss", "exp", "iat", "user_id", "role", "rev"]})
-        if type(claims["user_id"]) is not int or claims["user_id"] < 1 or "department" not in claims:
+                            options={"require": ["iss", "exp", "iat", "rev"]})
+        if claims.get("token_use") == "subject":
+            if claims["rev"] != "" or not isinstance(claims.get("sub"), str) or not claims["sub"].strip():
+                raise jwt.InvalidTokenError()
+        elif (type(claims.get("user_id")) is not int or claims["user_id"] < 1
+                or claims.get("role") is None or "department" not in claims):
             raise jwt.InvalidTokenError()
     except jwt.InvalidTokenError:
         raise unauthorized() from None

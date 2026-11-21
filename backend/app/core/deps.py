@@ -14,6 +14,8 @@ def get_current_user(credentials: HTTPAuthorizationCredentials | None = Depends(
     if credentials is None:
         raise unauthorized()
     claims = decode_token(credentials.credentials)
+    if not isinstance(claims["rev"], str) or not claims["rev"]:
+        raise unauthorized()
     try:
         with database_cursor(DB_DOWN) as cursor:
             user = read_user(cursor, user_id=claims["user_id"])

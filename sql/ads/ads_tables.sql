@@ -93,7 +93,7 @@ CREATE TABLE IF NOT EXISTS ads_drg_theme (
     cmi DECIMAL(28,2) NULL,
     grouping_reason VARCHAR(48) NULL,
     PRIMARY KEY (dataset_id, stat_date, dept_code)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin COMMENT='disease: DRG/DIP analysis';
 
 CREATE TABLE IF NOT EXISTS ads_efficiency_theme (
     dataset_id VARCHAR(128) NOT NULL,
@@ -107,7 +107,7 @@ CREATE TABLE IF NOT EXISTS ads_efficiency_theme (
     available_reason VARCHAR(48) NULL,
     occupied_reason VARCHAR(48) NULL,
     PRIMARY KEY (dataset_id, stat_date, dept_code)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin COMMENT='resource: resource efficiency';
 
 CREATE TABLE IF NOT EXISTS ads_service_theme (
     dataset_id VARCHAR(128) NOT NULL,

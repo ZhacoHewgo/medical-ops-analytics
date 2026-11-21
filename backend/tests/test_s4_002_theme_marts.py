@@ -84,6 +84,8 @@ def test_disease_and_resource_reuse_the_course_physical_tables():
     assert set(themes.COLUMNS) | {"ads_outpatient_theme"} == declared - {themes.STATUS}
     assert themes.canonical("disease") == "drg" and themes.TABLES["drg"] == "ads_drg_theme"
     assert themes.canonical("resource") == "efficiency" and themes.TABLES["efficiency"] == "ads_efficiency_theme"
+    assert re.search(r"CREATE TABLE IF NOT EXISTS ads_drg_theme \([^;]+COMMENT='disease\b", script)
+    assert re.search(r"CREATE TABLE IF NOT EXISTS ads_efficiency_theme \([^;]+COMMENT='resource\b", script)
 
 
 def read_tables(dataset):

@@ -47,10 +47,42 @@ def frame():
 def test_dedupe_compares_all_business_before_projection_and_preserves_input():
     original = frame()
     before = original.copy(deep=True)
-    result, stats = c.dedupe(original, ['visit_id'])
+    result, stats = c.dedupe(original, ['dataset_id', 'visit_id'], with_counts=True)
     assert sorted(result.source_row_number.tolist()) == [1, 2]
     assert stats == {'invalid_id_rows': 1, 'conflicting_id_rows': 2, 'duplicate_removed': 1}
     pd.testing.assert_frame_equal(original, before)
+
+
+def test_dedupe_returns_a_frame_with_unique_requested_keys():
+    original = pd.DataFrame({
+        'dataset_id': ['SIM_A', 'SIM_B', 'SIM_B'],
+        'visit_id': ['v1', 'v1', 'v2'],
+        'updated_at': ['2025-01-01', '2025-01-02', '2025-01-02'],
+        'value': ['earlier', 'latest', 'other'],
+    })
+    cleaned = c.dedupe(original, ['visit_id'])
+    assert cleaned['value'].tolist() == ['latest', 'other']
+    assert not cleaned.duplicated(subset=['visit_id']).any()
+
+
+def test_dedupe_without_keys_selects_business_id_and_keeps_latest():
+    original = pd.DataFrame({
+        'id': [11, 12, 13], 'charge_id': ['C1', 'C1', 'C2'], 'visit_id': ['V1', 'V1', 'V1'],
+        'updated_at': ['2025-01-03', '2025-01-01', '2025-01-02'], 'value': [30, 10, 20],
+    })
+    result = c.dedupe(original)
+    assert result['charge_id'].tolist() == ['C1', 'C2']
+    assert result['value'].tolist() == [30, 20]
+    assert len(original) == 3
+
+
+def test_dedupe_without_recognized_key_collapses_exact_rows_only():
+    original = pd.DataFrame({'label': ['x', 'x', 'x'], 'value': [1, 1, 2]})
+    expected = original.iloc[[0, 2]].reset_index(drop=True)
+    result, counts = c.dedupe(original, with_counts=True)
+    assert result is original
+    pd.testing.assert_frame_equal(original, expected)
+    assert counts == {'invalid_id_rows': 0, 'conflicting_id_rows': 0, 'duplicate_removed': 1}
 
 
 def test_dedupe_preserves_rows_with_missing_optional_values():
@@ -58,7 +90,7 @@ def test_dedupe_preserves_rows_with_missing_optional_values():
         'visit_id': ['one', 'one', 'two', 'three', 'three'],
         'value': pd.Series([float('nan'), pd.NA, pd.NA, None, 'value'], dtype=object),
     })
-    cleaned, stats = c.dedupe(original, ['visit_id'])
+    cleaned, stats = c.dedupe(original, ['visit_id'], with_counts=True)
     assert cleaned['visit_id'].tolist() == ['one', 'two']
     assert cleaned['value'].isna().all()
     assert stats == {'invalid_id_rows': 0, 'conflicting_id_rows': 2, 'duplicate_removed': 1}
@@ -69,7 +101,7 @@ def test_dedupe_preserves_integer_ids_and_does_not_merge_text_keys():
         'visit_id': pd.Series([2, 2, 3, '2', True, None, 2.0], dtype=object),
         'value': ['same', 'same', 'other', 'text', 'boolean', 'missing', 'decimal'],
     })
-    result, stats = c.dedupe(original, ['visit_id'])
+    result, stats = c.dedupe(original, ['visit_id'], with_counts=True)
     assert result['visit_id'].tolist() == [2, 3, '2']
     assert stats == {'invalid_id_rows': 3, 'conflicting_id_rows': 0, 'duplicate_removed': 1}
 
@@ -84,7 +116,7 @@ def test_dedupe_uses_unique_latest_business_timestamp():
         ],
         'value': ['latest', 'earlier', 'tie A', 'tie B', 'dated', 'undated'],
     })
-    cleaned, stats = c.dedupe(original, ['visit_id'])
+    cleaned, stats = c.dedupe(original, ['visit_id'], with_counts=True)
     assert cleaned['value'].tolist() == ['latest']
     assert stats == {'invalid_id_rows': 0, 'conflicting_id_rows': 4, 'duplicate_removed': 1}
 
@@ -119,6 +151,16 @@ def test_mask_no_partial_values_or_input_mutation():
     assert out.patient_name.tolist() == ['[REDACTED]', None, None]
     assert stats == {'patient_name':{'nonempty':1,'processed':1,'missing':2}}
     assert df.patient_name.iloc[0] == 'SIM_SECRET'
+
+
+def test_mask_without_columns_redacts_identifiers_in_place():
+    original = pd.DataFrame({'身份证号': ['SIM_ID_TEXT', None], 'id_card': [123456, None],
+                             'name': ['SIM_NAME', ''], 'phone': ['SIM_PHONE', None], 'visit_id': [1, 2]})
+    result = c.mask_privacy(original)
+    assert result is original
+    for column in ('身份证号', 'id_card', 'name', 'phone'):
+        assert original[column].tolist() == ['[REDACTED]', None]
+    assert original['visit_id'].tolist() == [1, 2]
 
 
 def synthetic(source, count=2, dataset=DATASET):
@@ -876,7 +918,7 @@ def test_mask_and_dedupe_duplicate_index_use_row_positions():
     pd.testing.assert_frame_equal(private,before)
     raw=frame();raw.index=[4]*len(raw)
     before=raw.copy(deep=True)
-    output,stats=c.dedupe(raw,['visit_id'])
+    output,stats=c.dedupe(raw,['dataset_id', 'visit_id'], with_counts=True)
     assert sorted(output.source_row_number.tolist())==[1,2]
     assert stats=={'invalid_id_rows':1,'conflicting_id_rows':2,'duplicate_removed':1}
     pd.testing.assert_frame_equal(raw,before)

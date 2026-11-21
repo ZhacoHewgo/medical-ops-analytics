@@ -95,6 +95,22 @@ def test_path_boundaries(sim_dataset):
         sources.read_source(name, info)
 
 
+def test_course_registration_uses_only_canonical_course_files(monkeypatch, tmp_path):
+    monkeypatch.setattr(sources, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(sources, "GENERATED_ROOT", tmp_path / "data/generated")
+    name = "his_outpatient"
+    path = tmp_path / "data" / sources.SOURCES[name]["path"]
+    info = dict(kind="csv", file_path=str(path), dataset_id="course-platform-v1",
+                etl_batch_date="2026-11-21")
+    assert sources.validate_source(name, info)["file_path"] == str(path)
+    with pytest.raises(sources.OdsError, match="^ODS_PATH_INVALID$"):
+        sources.validate_source(name, {**info, "file_path": str(path.with_name("other.csv"))})
+    path.parent.mkdir(parents=True)
+    path.symlink_to(path.with_name("other.csv"))
+    with pytest.raises(sources.OdsError, match="^ODS_PATH_INVALID$"):
+        sources.validate_source(name, info)
+
+
 @pytest.mark.parametrize("name", list(sources.SOURCES))
 def test_csv_and_snapshot_preserve_strings(sim_dataset, name):
     rows = sources.read_source(name, config(sim_dataset, name))
@@ -290,6 +306,48 @@ def test_test_url_gate_requires_exact_test_database(monkeypatch):
     # Explicitly synthetic credentials, never a working connection string.
     monkeypatch.setenv("ODS_TEST_DATABASE_URL", "mysql://SIM:SIM@127.0.0.1:13306/hospital")
     with pytest.raises(sources.OdsError, match="^ODS_TEST_DATABASE_REQUIRED$"):
+        sources.database_options(test_only=True)
+
+
+@pytest.fixture
+def private_ods_config(monkeypatch, tmp_path):
+    monkeypatch.setattr(sources, "PROJECT_ROOT", tmp_path)
+    monkeypatch.delenv("ODS_DATABASE_URL", raising=False)
+    monkeypatch.delenv("ODS_TEST_DATABASE_URL", raising=False)
+    path = tmp_path / ".runtime" / "ods-connection.json"
+    path.parent.mkdir(mode=0o700)
+    path.write_text(json.dumps({"ODS_DATABASE_URL": "mysql://SIM:SIM@127.0.0.1:13306/hospital"}))
+    path.chmod(0o600)
+    return path
+
+
+def test_database_options_reads_private_file_and_prefers_environment(private_ods_config, monkeypatch):
+    assert sources.database_options()["user"] == "SIM"
+    monkeypatch.setenv("ODS_DATABASE_URL", "mysql://ENV:SIM@127.0.0.1:13306/hospital")
+    assert sources.database_options()["user"] == "ENV"
+    monkeypatch.setenv("ODS_DATABASE_URL", "invalid")
+    with pytest.raises(sources.OdsError, match="^ODS_DATABASE_URL_INVALID$"):
+        sources.database_options()
+
+
+@pytest.mark.parametrize("invalid", ["mode", "link", "json", "host"])
+def test_database_options_rejects_invalid_private_file(private_ods_config, invalid):
+    path = private_ods_config
+    if invalid == "mode":
+        path.chmod(0o644)
+    elif invalid == "link":
+        original = path.rename(path.with_name("original.json"))
+        path.symlink_to(original)
+    elif invalid == "json":
+        path.write_text("{SIM_PRIVATE")
+    else:
+        path.write_text(json.dumps({"ODS_DATABASE_URL": "mysql://SIM:SIM@elsewhere.invalid:13306/hospital"}))
+    with pytest.raises(sources.OdsError, match="^ODS_DATABASE_URL_INVALID$"):
+        sources.database_options()
+
+
+def test_database_options_private_file_cannot_supply_test_url(private_ods_config):
+    with pytest.raises(sources.OdsError, match="^ODS_DATABASE_URL_MISSING$"):
         sources.database_options(test_only=True)
 
 

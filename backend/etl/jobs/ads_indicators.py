@@ -3,11 +3,15 @@ from calendar import monthrange
 from collections import Counter
 from datetime import date, timedelta
 from functools import partial
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from numbers import Real
+
+import pandas as pd
 
 from etl.config.source_config import OdsError, connect_database
 from etl.jobs import aggregate_themes as themes, build_dwd as build, clean_dwd as clean
 from etl.jobs.aggregate_dws import _day, _department, _report, _scope
+from etl.jobs.quality_check import PRIVACY_KEY_ERRORS
 from etl.scheduler import scheduler
 
 
@@ -58,10 +62,41 @@ SAFE_ERRORS = {
 }
 
 
-def calc_outpatient_volume(start_date, end_date, granularity, *, dataset_id=None, batch_date=None, env="dev"):
-    import pandas as pd
+class _BuildRangeError(OdsError):
+    def __init__(self, requested, available):
+        self.requested = requested
+        self.available = available
+        first, last = requested
+        low, high = available
+        super().__init__("N10_RANGE_OUTSIDE_BUILD",
+                         detail=f"requested={first.isoformat()}..{last.isoformat()}, "
+                                f"available={low.isoformat()}..{high.isoformat()}")
 
-    rows, _ = _run(start_date, end_date, granularity, dataset_id, batch_date, env, write=False)
+
+def calc_outpatient_volume(start_date, end_date=None, granularity="day", *, dataset_id=None, batch_date=None, env="dev"):
+    if isinstance(start_date, pd.DataFrame) and end_date is None:
+        frame = start_date
+        if frame.empty:
+            return None
+        if not frame.columns.is_unique:
+            raise OdsError("N10_ARGUMENTS_INVALID")
+        if "outpatient_visits" in frame:
+            total = _sum_measures(frame["outpatient_visits"], counts=True)
+            return int(total) if total is not None else None
+        if "visit_id" not in frame:
+            raise OdsError("N10_ARGUMENTS_INVALID", detail="VISIT_ID_REQUIRED")
+        if "visit_type" in frame:
+            outpatient = frame["visit_type"].isin(("OUTPATIENT", "门诊", "普通", "专家", "急诊"))
+            inpatient = frame["visit_type"].isin(("INPATIENT", "住院"))
+            if not (outpatient | inpatient).all():
+                raise OdsError("N10_ARGUMENTS_INVALID", detail="VISIT_TYPE_INVALID")
+            frame = frame.loc[outpatient]
+        if not frame["visit_id"].map(lambda value: clean._valid_id(value, integer=True)).all():
+            raise OdsError("N10_ARGUMENTS_INVALID", detail="VISIT_ID_INVALID")
+        key = ["dataset_id", "visit_id"] if "dataset_id" in frame else ["visit_id"]
+        return len(frame.drop_duplicates(subset=key))
+    rows, _ = _run(start_date, start_date if end_date is None else end_date, granularity,
+                   dataset_id, batch_date, env, write=False)
     return pd.DataFrame(rows, columns=COLUMNS, dtype=object)
 
 
@@ -69,8 +104,40 @@ def calc_inpatient_discharge(start_date, end_date, granularity, *, dataset_id=No
     return _theme_frame(DISCHARGES, start_date, end_date, granularity, dataset_id, batch_date, env)
 
 
-def calc_bed_usage_rate(start_date, end_date, granularity, *, dataset_id=None, batch_date=None, env="dev"):
-    return _theme_frame(BED, start_date, end_date, granularity, dataset_id, batch_date, env)
+def calc_bed_usage_rate(start_date, end_date=None, granularity="day", *, dataset_id=None, batch_date=None, env="dev"):
+    if isinstance(start_date, pd.DataFrame) and end_date is None:
+        columns = ("occupied_bed_days", "available_bed_days")
+        if not start_date.columns.is_unique or not set(columns) <= set(start_date.columns):
+            raise OdsError("N10_ARGUMENTS_INVALID", detail="BED_DAYS_REQUIRED")
+        occupied, available = (_sum_measures(start_date[column]) for column in columns)
+        return _bed_rate(occupied, available)
+    if isinstance(start_date, (Real, Decimal)) or isinstance(end_date, (Real, Decimal)):
+        return _bed_rate(_sum_measures((start_date,)), _sum_measures((end_date,)))
+    end = start_date if end_date is None else end_date
+    return _theme_frame(BED, start_date, end, granularity, dataset_id, batch_date, env)
+
+
+def _sum_measures(values, *, counts=False):
+    total = None
+    for value in values:
+        if value is None or value is pd.NA:
+            return None
+        try:
+            number = Decimal(str(value))
+        except InvalidOperation:
+            raise OdsError("N10_MEASURE_INVALID") from None
+        if number.is_nan():
+            return None
+        if not number.is_finite() or number < 0 or counts and number != number.to_integral_value():
+            raise OdsError("N10_MEASURE_INVALID") from None
+        total = number if total is None else total + number
+    return total
+
+
+def _bed_rate(occupied, available):
+    if occupied is None or available is None or available == 0:
+        return None
+    return float(_decimal_ratio(occupied, available, 100))
 
 
 def calc_avg_stay_days(start_date, end_date, granularity, *, dataset_id=None, batch_date=None, env="dev"):
@@ -144,8 +211,19 @@ def run_indicators(start_date, end_date, granularity, *, dataset_id=None, batch_
 
 def rerun(date_range, granularity=None, *extra, dataset_id=None, batch_date=None, env="dev", metrics=()):
     start, end, grain = _rerun_arguments(date_range, granularity, extra)
-    return run_indicators(start, end, grain, dataset_id=dataset_id, batch_date=batch_date, env=env,
-                          metrics=metrics)
+    try:
+        return run_indicators(start, end, grain, dataset_id=dataset_id, batch_date=batch_date,
+                              env=env, metrics=metrics)
+    except _BuildRangeError as error:
+        first, last = error.requested
+        low, high = error.available
+        if first <= high and last >= low:
+            raise
+        return {
+            "status": "NO_DATA", "code": error.code, "rows": 0, "granularity": _grain(grain),
+            "start_date": first.isoformat(), "end_date": last.isoformat(),
+            "available_start_date": low.isoformat(), "available_end_date": high.isoformat(),
+        }
 
 
 def _rerun_arguments(date_range, granularity, extra):
@@ -230,7 +308,9 @@ def _transaction(span, grain, dataset_id, batch_date, env, *, write, calculation
                 connection.rollback()
             except Exception:
                 raise OdsError("N10_ROLLBACK_FAILED") from None
-            if isinstance(error, OdsError) and error.code in SAFE_ERRORS:
+            if isinstance(error, _BuildRangeError):
+                raise error from None
+            if isinstance(error, OdsError) and (error.code in SAFE_ERRORS or error.code in PRIVACY_KEY_ERRORS):
                 raise OdsError(error.code) from None
             raise OdsError("N10_TRANSACTION_FAILED") from None
         try:
@@ -250,6 +330,8 @@ def _source(cursor, dataset_id, batch_date, env):
             cursor, dataset_id=dataset, batch_date=batch, env=env, report=report,
         )
     except OdsError as error:
+        if error.code in PRIVACY_KEY_ERRORS:
+            raise OdsError(error.code) from None
         if error.code == "N8_ARGUMENTS_INVALID":
             raise OdsError("N10_DATASET_INVALID") from None
         raise OdsError("N10_SOURCE_STALE") from None
@@ -311,7 +393,7 @@ def _calculate(cursor, span, grain, dataset_id, batch_date, env, *, write, metri
     first, last = span
     allowed = (low, high) if grain == "day" else (low.replace(day=1), _month_end(high))
     if not allowed[0] <= first <= last <= allowed[1]:
-        raise OdsError("N10_RANGE_OUTSIDE_BUILD")
+        raise _BuildRangeError(span, allowed)
     prior = (first - timedelta(days=1)).replace(day=1) if grain == "month" and first > low else first
     expected, dws, ads = _read_counts(cursor, dataset, batch, run, max(prior, low), min(last, high))
     totals, missing = _period_counts(expected, dws, ads, grain)
@@ -430,7 +512,7 @@ def _calculate_theme(cursor, span, grain, dataset_id, batch_date, env, *, write,
     low, high = (date.fromisoformat(report[key]) for key in ("effective_start", "effective_end"))
     allowed = (low, high) if grain == "day" else (low.replace(day=1), _month_end(high))
     if not allowed[0] <= first <= last <= allowed[1]:
-        raise OdsError("N10_RANGE_OUTSIDE_BUILD")
+        raise _BuildRangeError(span, allowed)
     cursor.execute("SELECT dept_code FROM dim_department WHERE dataset_id=%s ORDER BY dept_code", (dataset,))
     scopes = [None, *(row[0] for row in cursor.fetchall())]
     rows = _theme_rows(cursor, span, grain, dataset, batch, run, low, high, scopes, (metric,))

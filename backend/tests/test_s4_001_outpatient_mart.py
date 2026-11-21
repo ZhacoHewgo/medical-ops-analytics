@@ -7,6 +7,7 @@ import subprocess
 import sys
 from uuid import uuid4
 
+import pandas as pd
 import pytest
 
 from sql_fixture import execute_schema
@@ -21,6 +22,37 @@ DAY = "2025-01-01"
 FIRST_DEPT = "SIM_DEPT_01"
 SECOND_DEPT = "SIM_DEPT_02"
 DWS, ADS = "dws_dept_daily", "ads_outpatient_theme"
+
+
+def test_build_dws_daily_aggregates_the_dataframe_without_connecting(monkeypatch):
+    def unexpected_connection():
+        pytest.fail("table input reached the database")
+
+    monkeypatch.setattr(mart, "connect_database", unexpected_connection)
+    source = pd.DataFrame([
+        (DAY, FIRST_DEPT, "OUTPATIENT", "10.20"),
+        (DAY, FIRST_DEPT, "OUTPATIENT", "-2.10"),
+        (DAY, FIRST_DEPT, "INPATIENT", "900.00"),
+        (DAY, SECOND_DEPT, "OUTPATIENT", None),
+        ("2025-01-02", FIRST_DEPT, "OUTPATIENT", "3.00"),
+    ], columns=["visit_date", "dept_code", "visit_type", "source_total_fee"])
+    before = source.copy(deep=True)
+    result = mart.build_dws_daily(source, DAY).set_index("dept_code")
+    assert result.loc[FIRST_DEPT, "outpatient_visits"] == 2
+    assert result.loc[FIRST_DEPT, "outpatient_total_fee"] == Decimal("8.10")
+    assert result.loc[SECOND_DEPT, "outpatient_fee_samples"] == 0
+    assert result.loc[SECOND_DEPT, "outpatient_total_fee"] is None
+    assert result.loc[SECOND_DEPT, "fee_status"] == "INCOMPLETE_INPUT"
+    assert len(mart.build_dws_daily(source)) == 3
+    pd.testing.assert_frame_equal(source, before)
+
+
+def test_build_dws_daily_keeps_dataframe_datasets_separate():
+    source = pd.DataFrame({"dataset_id": ["SIM_A", "SIM_B"], "date": [DAY, DAY],
+                           "department": [FIRST_DEPT, FIRST_DEPT], "amount": [1, 2]})
+    result = mart.build_dws_daily(source).set_index("dataset_id")
+    assert result["outpatient_total_fee"].to_dict() == {"SIM_A": Decimal("1.00"), "SIM_B": Decimal("2.00")}
+    assert mart.build_dws_daily(source, dataset_id="SIM_B")["dataset_id"].tolist() == ["SIM_B"]
 
 
 @pytest.mark.parametrize("function,args,code", [
