@@ -308,11 +308,27 @@ def _read(cursor,table,columns,dataset):
     return [dict(zip(columns,row)) for row in cursor.fetchall()]
 
 
-def _previous_certificate(cursor,dataset,batch,env):
+def _charge_rows(cursor,snapshot,columns,dataset):
+    """Reuse the charge rows this transaction already read when the shape matches.
+
+    load_quality_snapshot_from_cursor selects the same column list from
+    dwd_charge_detail on the caller's cursor, and every caller opens the
+    transaction with REPEATABLE READ, so both reads resolve to one snapshot of one
+    table.  The declared column tuple is compared first: a snapshot that does not
+    state the certified columns keeps the separate read instead of being trusted.
+    """
+    tables=snapshot.get('tables') if isinstance(snapshot,dict) else None
+    declared=((tables or {}).get('dwd_charge_detail') or {}).get('dwd') or {}
+    if tuple(declared.get('columns') or ())!=columns or 'rows' not in declared:
+        return _read(cursor,'dwd_charge_detail',columns,dataset)
+    return declared['rows']
+
+
+def _previous_certificate(cursor,dataset,batch,env,audit_rows=None,dim_rows=None):
     from etl.jobs import build_dims as dims
     from uuid import UUID
     import re
-    rows = _read(cursor,AUDIT,AUDIT_COLUMNS,dataset)
+    rows = _read(cursor,AUDIT,AUDIT_COLUMNS,dataset) if audit_rows is None else audit_rows
     if rows:
         try:
             if len(rows)!=1: raise ValueError
@@ -352,7 +368,7 @@ def _previous_certificate(cursor,dataset,batch,env):
             cert={k:old[k] for k in ('dataset_id','template_version','date_min','date_max','required_date_start','required_date_end','row_counts')}
             cert['dim_sha256']=a['dim_sha256']
             prior=dims._bridge_certificate_rows(cert,dataset)
-            if not dims._same_shape_value(dims._read_rows(cursor,dataset),prior): raise ValueError
+            if not dims._same_shape_value(dims._read_rows(cursor,dataset) if dim_rows is None else dim_rows,prior): raise ValueError
             return cert
         except Exception:
             raise OdsError('N8_DIMENSION_INVALID') from None
@@ -361,7 +377,7 @@ def _previous_certificate(cursor,dataset,batch,env):
     dims._dimension_report_identity(report,dataset,env=env,batch=batch)
     cert={k:report[k] for k in ('dataset_id','template_version','date_min','date_max','required_date_start','required_date_end','row_counts','dim_sha256')}
     prior=dims._bridge_certificate_rows(cert,dataset)
-    if not dims._same_shape_value(dims._read_rows(cursor,dataset),prior):
+    if not dims._same_shape_value(dims._read_rows(cursor,dataset) if dim_rows is None else dim_rows,prior):
         raise OdsError('N8_DIMENSION_INVALID') from None
     return cert
 
@@ -682,10 +698,10 @@ def verify_build_freshness_from_cursor(cursor,*,dataset_id,batch_date,env,report
         if a['build_scope']!='ALL': raise ValueError
         if a['clean_run_id']!=snapshot['clean_run_id'] or a['batch_date'].isoformat()!=batch_date or a['mapping_version']!=snapshot['mapping_version'] or a['privacy_key_id']!=snapshot['privacy_key_id']: raise OdsError('N8_STALE') from None
         # Reuse strict audit identity/certificate check; this branch never falls back.
-        _previous_certificate(cursor,dataset_id,batch_date,env)
+        _previous_certificate(cursor,dataset_id,batch_date,env,audit_rows,actual_dims)
         columns=tuple(clean.TABLES['dwd_charge_detail']['columns'])
         stored_visit=_read(cursor,VISIT,VISIT_COLUMNS,dataset_id)
-        stored_charge=_read(cursor,'dwd_charge_detail',columns,dataset_id)
+        stored_charge=_charge_rows(cursor,snapshot,columns,dataset_id)
         _conserve(VISIT_COLUMNS,stored_visit,visits,('dataset_id','visit_type','visit_id'))
         _conserve(columns,stored_charge,charges,('dataset_id','charge_id'))
         hashes=dict(input=_input_digest(snapshot,dates),dim=dims._hash(actual_dims),visit=rows_digest(tuple(c for c in VISIT_COLUMNS if c!='etl_load_time'),stored_visit,('dataset_id','visit_type','visit_id')),charge=rows_digest(columns,stored_charge,('dataset_id','charge_id')))

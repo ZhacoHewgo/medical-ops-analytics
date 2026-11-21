@@ -53,6 +53,42 @@ def test_dedupe_compares_all_business_before_projection_and_preserves_input():
     pd.testing.assert_frame_equal(original, before)
 
 
+def test_dedupe_preserves_rows_with_missing_optional_values():
+    original = pd.DataFrame({
+        'visit_id': ['one', 'one', 'two', 'three', 'three'],
+        'value': pd.Series([float('nan'), pd.NA, pd.NA, None, 'value'], dtype=object),
+    })
+    cleaned, stats = c.dedupe(original, ['visit_id'])
+    assert cleaned['visit_id'].tolist() == ['one', 'two']
+    assert cleaned['value'].isna().all()
+    assert stats == {'invalid_id_rows': 0, 'conflicting_id_rows': 2, 'duplicate_removed': 1}
+
+
+def test_dedupe_preserves_integer_ids_and_does_not_merge_text_keys():
+    original = pd.DataFrame({
+        'visit_id': pd.Series([2, 2, 3, '2', True, None, 2.0], dtype=object),
+        'value': ['same', 'same', 'other', 'text', 'boolean', 'missing', 'decimal'],
+    })
+    result, stats = c.dedupe(original, ['visit_id'])
+    assert result['visit_id'].tolist() == [2, 3, '2']
+    assert stats == {'invalid_id_rows': 3, 'conflicting_id_rows': 0, 'duplicate_removed': 1}
+
+
+def test_dedupe_uses_unique_latest_business_timestamp():
+    original = pd.DataFrame({
+        'visit_id': [1, 1, 2, 2, 3, 3],
+        'updated_at': [
+            '2025-01-02T09:00:00+08:00', '2025-01-01T18:00:00Z',
+            '2025-01-02T09:00:00+08:00', '2025-01-02T01:00:00Z',
+            '2025-01-02T09:00:00+08:00', None,
+        ],
+        'value': ['latest', 'earlier', 'tie A', 'tie B', 'dated', 'undated'],
+    })
+    cleaned, stats = c.dedupe(original, ['visit_id'])
+    assert cleaned['value'].tolist() == ['latest']
+    assert stats == {'invalid_id_rows': 0, 'conflicting_id_rows': 4, 'duplicate_removed': 1}
+
+
 def test_fill_mean_median_unknown_real_operations():
     original = pd.DataFrame({'mean': [1, 3, None], 'median': [1, 9, None], 'text': ['', 'SIM', None]})
     out, stats = c.fill_missing(original, {'mean': 'mean', 'median': 'median', 'text': '未知'})

@@ -1,16 +1,34 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, shallowRef } from 'vue'
-import DashboardChart from './components/DashboardChart.vue'
+import { useRoute, useRouter } from 'vue-router'
+import KpiCard from './components/charts/KpiCard.vue'
+import TrendChart from './components/charts/TrendChart.vue'
+import RankBar from './components/charts/RankBar.vue'
 import { createDashboardLoader } from './api/dashboard.mjs'
+import { useSession } from './api/session.mjs'
+
+const props = defineProps({ authenticated: Boolean, preview: Boolean, endpoint: String, loadResponse: Function })
+const router = useRouter()
+const route = useRoute()
+const session = props.authenticated ? useSession() : null
+const user = session?.current?.user
+const department = user?.department ?? null
+const leave = () => {
+  session.setSession(null)
+  void router.replace({ name: 'login' })
+}
 
 const state = shallowRef({ status: 'idle', data: null, error: '', requestedFilters: {} })
 const meta = shallowRef(null)
-const draft = reactive({ start_date: '', end_date: '', dept_code: '' })
-const preview = new URLSearchParams(window.location.search).get('source') === 'preview'
+const draft = reactive({ start_date: '', end_date: '', dept_code: department || '' })
+const preview = !props.authenticated && props.preview
 const departmentLabel = code => code === '__UNKNOWN__' ? '未标注科室（__UNKNOWN__）' : code
 const formatCount = count => count.toLocaleString('zh-CN')
 const loader = createDashboardLoader({
-  source: preview ? 'preview' : 'csv',
+  source: props.authenticated ? 'ads' : preview ? 'preview' : 'csv',
+  department,
+  endpoint: props.endpoint,
+  fetchImpl: props.loadResponse,
   onChange: value => {
     state.value = value
     if (value.status === 'success') meta.value = value.data.meta
@@ -34,6 +52,12 @@ async function loadDefault() {
   if (result) Object.assign(draft, { ...result.filters, dept_code: result.filters.dept_code || '' })
 }
 
+function handleDrill(next) {
+  const filters = { ...data.value.filters, ...next }
+  Object.assign(draft, filters, { dept_code: filters.dept_code || '' })
+  return loader.load(filters)
+}
+
 async function retry() {
   const result = await loader.retry()
   if (result) Object.assign(draft, { ...result.filters, dept_code: result.filters.dept_code || '' })
@@ -48,13 +72,27 @@ onBeforeUnmount(loader.dispose)
   <header class="topbar">
     <div class="topbar-inner">
       <div class="brand"><span class="brand-mark" aria-hidden="true">+</span><span>MOPS <span class="brand-divider">/</span> 医疗运营工作台</span></div>
-      <span class="demo-badge"><span aria-hidden="true" class="status-dot"></span>{{ preview ? '节点 8 宽表 · 本地只读预览' : '课程样例数据 · 本地演示' }}</span>
+      <span class="demo-badge"><span aria-hidden="true" class="status-dot"></span>{{ authenticated ? '门诊日汇总集市' : preview ? '节点 8 宽表 · 本地只读预览' : '课程样例数据 · 本地演示' }}</span>
+      <div v-if="authenticated" class="account-actions">
+        <RouterLink :to="{ name: 'inpatient' }">住院</RouterLink>
+        <RouterLink :to="{ name: 'revenue' }">收入</RouterLink>
+        <RouterLink :to="{ name: 'disease' }">病种</RouterLink>
+        <RouterLink :to="{ name: 'resource' }">资源效率</RouterLink>
+        <RouterLink :to="{ name: 'reports' }">门诊报表</RouterLink>
+        <RouterLink v-if="user?.role === 'admin'" :to="{ name: 'admin-users' }">用户管理</RouterLink>
+        <RouterLink v-if="user?.role !== 'department'" :to="{ name: 'ops-sources' }">数据源与任务</RouterLink>
+        <span>{{ user?.username }}</span>
+        <button type="button" class="button secondary" @click="leave">退出登录</button>
+      </div>
+      <RouterLink v-else :to="{ name: 'outpatient' }">打开认证看板</RouterLink>
     </div>
   </header>
 
   <main id="main" class="workspace" tabindex="-1">
+    <p v-if="authenticated && route.query.denied === 'admin'" class="report-error" role="alert">只有管理员可以打开用户管理。</p>
+    <p v-if="authenticated && route.query.denied === 'ops'" class="report-error" role="alert">当前账号无权查看数据源与任务。</p>
     <section class="page-heading" aria-labelledby="page-title">
-      <div><p class="eyebrow">OUTPATIENT OVERVIEW</p><h1 id="page-title">门诊驾驶舱</h1><p class="lead">看清门诊规模、每日变化与科室分布。</p><a :href="preview ? '/' : '/?source=preview'">{{ preview ? '返回 CSV 看板' : '打开宽表预览' }}</a></div>
+      <div><p class="eyebrow">OUTPATIENT OVERVIEW</p><h1 id="page-title">门诊驾驶舱</h1><p class="lead">看清门诊规模、每日变化与科室分布。</p><a v-if="!authenticated" :href="preview ? '/' : '/?source=preview'">{{ preview ? '返回 CSV 看板' : '打开宽表预览' }}</a></div>
       <div v-if="meta" class="available-range"><span>可用数据日期</span><strong>{{ meta.available_start_date }} — {{ meta.available_end_date }}</strong></div>
     </section>
 
@@ -63,7 +101,7 @@ onBeforeUnmount(loader.dispose)
       <form class="filter-form" @submit.prevent="loader.load({ ...draft })" aria-describedby="filter-help">
         <div class="field"><label for="start-date">开始日期</label><input id="start-date" v-model="draft.start_date" type="date" /></div>
         <div class="field"><label for="end-date">结束日期</label><input id="end-date" v-model="draft.end_date" type="date" /></div>
-        <div class="field department-field"><label for="department">科室代码</label><select id="department" v-model="draft.dept_code" :disabled="!meta"><option value="">全院科室</option><option v-for="code in meta?.department_codes || []" :key="code" :value="code">{{ departmentLabel(code) }}</option></select></div>
+        <div class="field department-field"><label for="department">科室代码</label><select id="department" v-model="draft.dept_code" :disabled="!meta || department !== null"><option v-if="department === null" value="">全院科室</option><option v-for="code in meta?.department_codes || (department ? [department] : [])" :key="code" :value="code">{{ departmentLabel(code) }}</option></select></div>
         <div class="filter-actions"><button type="submit" class="button primary" :disabled="!meta">应用筛选</button><button type="button" class="button secondary" @click="loadDefault">重置</button></div>
       </form>
     </section>
@@ -84,19 +122,19 @@ onBeforeUnmount(loader.dispose)
 
     <template v-else-if="data">
       <section class="overview-row" aria-label="当前范围门诊量">
-        <article class="panel kpi-card"><div class="kpi-label"><h2>门诊量</h2><span class="scope-pill">{{ data.filters.dept_code ? '单科室' : '全院' }}</span></div><p class="kpi-value">{{ formatCount(data.outpatient_visits) }}<span>人次</span></p><p>按保留的唯一就诊记录计数，不代表唯一患者数。</p></article>
+        <KpiCard :data="{ label: '门诊量', value: data.outpatient_visits, unit: '人次', scope: data.filters.dept_code ? '单科室' : '全院', description: '按有效的唯一就诊记录计数。' }" />
         <article class="panel scope-card"><p class="eyebrow">APPLIED SCOPE</p><h2>当前生效范围</h2><dl><div><dt>日期</dt><dd>{{ data.filters.start_date }} 至 {{ data.filters.end_date }}</dd></div><div><dt>科室</dt><dd>{{ data.filters.dept_code ? departmentLabel(data.filters.dept_code) : '全院科室' }}</dd></div></dl><p class="muted">仅展示有有效记录的日期；缺失日期不补零，科室仅按代码区分。</p></article>
       </section>
 
-      <section v-if="data.outpatient_visits === 0" class="panel state-panel empty-panel" aria-labelledby="empty-title"><span class="state-symbol" aria-hidden="true">—</span><h2 id="empty-title">当前范围暂无有效门诊记录</h2><p>服务已成功返回空结果，门诊量为 0。可调整日期或选择全院科室。</p><button class="button secondary" type="button" @click="loadDefault">查看全部数据</button></section>
+      <section v-if="data.outpatient_visits === 0" class="panel state-panel empty-panel" aria-labelledby="empty-title"><span class="state-symbol" aria-hidden="true">—</span><h2 id="empty-title">当前范围暂无有效门诊记录</h2><p>服务已成功返回空结果，门诊量为 0。可调整日期{{ department ? '。' : '或选择全院科室。' }}</p><button class="button secondary" type="button" @click="loadDefault">重置筛选</button></section>
 
       <div class="charts-grid">
-        <section class="panel chart-panel" aria-labelledby="trend-title"><div class="section-heading"><div><h2 id="trend-title">门诊日趋势</h2><p>按有效记录日展示 · 单位：人次</p></div><span class="chart-tag">日粒度</span></div><DashboardChart v-if="data.daily_trend.length" kind="trend" :rows="data.daily_trend" /><p v-else class="chart-empty">当前筛选无日趋势记录</p></section>
-        <section class="panel chart-panel" aria-labelledby="ranking-title"><div class="section-heading"><div><h2 id="ranking-title">科室门诊量排行</h2><p>门诊量降序，同值按代码升序 · 单位：人次</p></div></div><DashboardChart v-if="data.department_ranking.length" kind="ranking" :rows="data.department_ranking" /><p v-else class="chart-empty">当前筛选无科室排行记录</p></section>
+        <section class="panel chart-panel" aria-labelledby="trend-title"><div class="section-heading"><div><h2 id="trend-title">门诊日趋势</h2><p>按有效记录日展示 · 单位：人次</p></div><span class="chart-tag">日粒度</span></div><TrendChart v-if="data.daily_trend.length" :data="data.daily_trend" :drillable="authenticated" @select-row="row => handleDrill({ start_date: row.date, end_date: row.date })" /><p v-else class="chart-empty">当前筛选无日趋势记录</p></section>
+        <section class="panel chart-panel" aria-labelledby="ranking-title"><div class="section-heading"><div><h2 id="ranking-title">科室门诊量排行</h2><p>门诊量降序，同值按代码升序 · 单位：人次</p></div></div><RankBar v-if="data.department_ranking.length" :data="data.department_ranking" :drillable="authenticated && department === null" @select-row="row => handleDrill({ dept_code: row.dept_code })" /><p v-else class="chart-empty">当前筛选无科室排行记录</p></section>
       </div>
 
-      <section v-if="preview" class="panel quality-panel" aria-labelledby="build-title">
-        <h2 id="build-title">宽表来源与构建</h2>
+      <section v-if="preview || authenticated" class="panel quality-panel" aria-labelledby="build-title">
+        <h2 id="build-title">{{ authenticated ? '集市来源与构建' : '宽表来源与构建' }}</h2>
         <dl class="quality-grid">
           <div class="quality-item"><dt>来源表</dt><dd>{{ data.meta.source }}</dd></div>
           <div class="quality-item"><dt>批次</dt><dd>{{ data.meta.batch_date }}</dd></div>
@@ -108,6 +146,6 @@ onBeforeUnmount(loader.dispose)
       </section>
     </template>
 
-    <footer class="page-footer"><p>仅供课程样例本地演示，不代表已连接真实医院或完成课程正式验收。</p><p>样例模式不代表已独立验证原始数据的生成方式。</p></footer>
+    <footer v-if="!authenticated" class="page-footer"><p>仅供课程样例本地演示，不代表已连接真实医院或完成课程正式验收。</p><p>样例模式不代表已独立验证原始数据的生成方式。</p></footer>
   </main>
 </template>

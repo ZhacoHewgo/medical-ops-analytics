@@ -33,7 +33,7 @@ _SPECS = {
 _TYPES = ("NULL", "DUPLICATE", "VALUE_RANGE", "VOLUME_WAVE", "RECONCILE")
 _CATALOG = [(t, k) for t in _SPECS for k in _TYPES] + [(t, "MAPPING") for t, s in _SPECS.items() if s[7]] + [(t, "PRIVACY") for t in _SPECS]
 _CODES = "OK OPTIONAL_MISSING SOURCE_INVALID_ID SOURCE_CONFLICTING_ID SOURCE_INVALID_PRIMARY_DATE DUPLICATE_REMOVED INVALID_VALUE REFUND_POLICY_UNCONFIRMED STAY_DAYS_POLICY_UNCONFIRMED UNMAPPED_CODE PRIVACY_VIOLATION RECONCILE_MISMATCH NO_BASELINE NO_COMPARABLE_PAIR ZERO_BASELINE VOLUME_WAVE STALE RULE_ERROR NOT_RUN".split()
-_ERRORS = set("DQ_READ_RETRYABLE DQ_ARGUMENTS_INVALID DQ_CONFIG_INVALID DQ_SNAPSHOT_MISMATCH DQ_STALE DQ_RULE_ERROR DQ_INTERNAL_ERROR DQ_REPORT_PATH_INVALID DQ_REPORT_IDENTITY_CONFLICT DQ_REPORT_WRITE_FAILED DQ_GATE_FAILED DQ_INSUFFICIENT_EVIDENCE DWD_PRIVACY_KEY_MISSING DWD_PRIVACY_KEY_INVALID DWD_PRIVACY_KEY_CHANGED".split())
+_ERRORS = set("DQ_READ_RETRYABLE DQ_ARGUMENTS_INVALID DQ_CONFIG_INVALID DQ_SNAPSHOT_MISMATCH DQ_STALE DQ_RULE_ERROR DQ_INTERNAL_ERROR DQ_REPORT_PATH_INVALID DQ_REPORT_IDENTITY_CONFLICT DQ_REPORT_WRITE_FAILED DQ_GATE_FAILED DQ_INSUFFICIENT_EVIDENCE DWD_PRIVACY_KEY_MISSING DWD_PRIVACY_KEY_INVALID DWD_PRIVACY_KEY_CHANGED ODS_DATABASE_URL_MISSING ODS_DATABASE_URL_INVALID".split())
 _REASONS = ("invalid_id_rows", "conflicting_id_rows", "invalid_primary_date_rows")
 _SUPPRESSED = ("patient_name", "id_card", "phone")
 _AMOUNTS = {"fee_amount", "total_fee", "drug_fee", "consumable_fee", "amount"}
@@ -50,11 +50,18 @@ def _fail(code):
     raise OdsError(code) from None
 
 
+class _ReportArgumentError(OdsError):
+    def __init__(self, reason):
+        super().__init__("DQ_ARGUMENTS_INVALID", detail=reason)
+
+
 def _safe(function):
     @wraps(function)
     def boundary(*args, **kwargs):
         try:
             return function(*args, **kwargs)
+        except _ReportArgumentError as error:
+            raise error from None
         except OdsError as error:
             _fail(error.code if error.code in _ERRORS else "DQ_INTERNAL_ERROR")
         except Exception:
@@ -727,16 +734,53 @@ def _write_report(report):
         if root is not None: os.close(root)
 
 
+def _report_batch_day(value):
+    if isinstance(value, datetime):
+        value = value.date()
+    if type(value) is date:
+        return value
+    if value is None:
+        raise _ReportArgumentError("BATCH_DATE_MISSING")
+    if type(value) is int and 10000101 <= value <= 99991231:
+        value = str(value)
+    if not isinstance(value, str):
+        raise _ReportArgumentError("BATCH_DATE_INVALID_TYPE")
+    value = value.strip()
+    if not value:
+        raise _ReportArgumentError("BATCH_DATE_MISSING")
+    if re.fullmatch(r"[0-9]{8}", value):
+        value = f"{value[:4]}-{value[4:6]}-{value[6:]}"
+    if re.fullmatch(r"[0-9]{4}[-/.]?[0-9]{2}", value):
+        raise _ReportArgumentError("BATCH_DATE_MISSING_DAY")
+    if re.match(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9]{2}:", value):
+        stamp = value[:-1] + "+00:00" if value.endswith("Z") else value
+        try:
+            return datetime.fromisoformat(stamp).date()
+        except ValueError:
+            raise _ReportArgumentError("BATCH_DATE_INVALID_TIMESTAMP") from None
+    if re.fullmatch(r"[0-9]{4}年[0-9]{1,2}月[0-9]{1,2}日", value):
+        value = value[:-1].replace("年", "-").replace("月", "-")
+    numeric = re.fullmatch(r"([0-9]{4})([-/.])([0-9]{1,2})\2([0-9]{1,2})", value)
+    if numeric:
+        year, _, month, day = numeric.groups()
+        try:
+            return date(int(year), int(month), int(day))
+        except ValueError:
+            raise _ReportArgumentError("BATCH_DATE_INVALID") from None
+    if re.fullmatch(r"[A-Za-z][A-Za-z0-9_. -]{0,127}", value):
+        raise _ReportArgumentError("BATCH_DATE_LABEL_NOT_CALENDAR")
+    raise _ReportArgumentError("BATCH_DATE_INVALID_TEXT")
+
+
 @_safe
 def generate_quality_report(batch_date, *, dataset_id=None, env="dev"):
-    if (not isinstance(batch_date, str) or _day(batch_date) is None or env not in ("dev", "test")
-            or dataset_id is not None and not _id(dataset_id)):
-        _fail("DQ_ARGUMENTS_INVALID")
-    try:
-        if database_options()["database"] != ("hospital_test" if env == "test" else "hospital"):
-            _fail("DQ_ARGUMENTS_INVALID")
-    except OdsError:
-        _fail("DQ_ARGUMENTS_INVALID")
+    batch_date = _report_batch_day(batch_date).isoformat()
+    if env not in ("dev", "test"):
+        raise _ReportArgumentError("REPORT_ENV_INVALID")
+    if dataset_id is not None and not _id(dataset_id):
+        raise _ReportArgumentError("DATASET_SELECTOR_INVALID")
+    if database_options()["database"] != ("hospital_test" if env == "test" else "hospital"):
+        raise _ReportArgumentError("DATABASE_ENV_MISMATCH")
     config = _load_config()
     snapshot = _load_snapshot(batch_date, dataset_id=dataset_id)
     # A selector mismatch must not overwrite a report belonging to another dataset.

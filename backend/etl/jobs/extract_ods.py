@@ -1,7 +1,9 @@
 """Six-file ODS snapshots and guarded date ranges; no scheduling or cleaning."""
 
 import argparse
-from datetime import date, datetime, timezone
+from collections import Counter
+from datetime import date, datetime, time, timezone
+from decimal import Decimal, InvalidOperation
 import json
 from pathlib import Path
 import re
@@ -10,7 +12,7 @@ from time import monotonic
 import pandas as pd
 
 from etl.config.source_config import (
-    GENERATED_ROOT, PROJECT_ROOT, SOURCES, OdsError, connect_database, database_cursor,
+    FINANCE_SUMMARY_PREFIX, GENERATED_ROOT, PROJECT_ROOT, SOURCES, OdsError, connect_database, database_cursor,
     get_source, list_sources, read_source, register_source, test_connection,
     validate_batch, validate_dataset, validate_source, validate_text,
 )
@@ -278,22 +280,44 @@ def _load_range_to_ods(full_df, table, start_date, end_date):
     return len(inside)
 
 
+_FINANCE_SUMMARY_COLUMNS = frozenset(("dept", "amount", "etl_batch_date"))
+_PUBLIC_COLUMN_ALIASES = frozenset(("id", "etl_load_time", "dept", "amount"))
+
+
+def _record_fields_error(table, required, present, duplicate=0):
+    missing = required - present
+    metadata = [name for name in METADATA if name in missing]
+    business = [str(index) for index, name in enumerate(TABLES[table], 1) if name in missing]
+    extra = present - required
+    known_extra = ','.join(sorted(extra & _PUBLIC_COLUMN_ALIASES)) or '-'
+    detail = (f"metadata_missing={','.join(metadata) or '-'} business_missing={len(business)} "
+              f"unexpected={len(extra)} duplicate={duplicate} table={table} "
+              f"business_positions={','.join(business) or '-'} known_extra={known_extra}")
+    return OdsError("ODS_RECORD_FIELDS_INVALID", detail=detail)
+
+
 def validate_snapshot(df, table):
     if not isinstance(table, str) or table not in TABLES:
         raise OdsError("ODS_TABLE_INVALID")
+    columns = TABLES[table]
+    required = set(columns + METADATA)
+    if isinstance(df, pd.DataFrame) and not df.columns.is_unique:
+        present = set(df.columns)
+        raise _record_fields_error(table, required, present, len(df.columns) - len(present))
     try:
         records = df.to_dict(orient="records") if callable(getattr(df, "to_dict", None)) else list(df)
     except Exception:
         raise OdsError("ODS_SNAPSHOT_INVALID") from None
     if not records:
         raise OdsError("ODS_SNAPSHOT_EMPTY")
-    columns = TABLES[table]
-    required = set(columns + METADATA)
     result = []
     dataset = batch = None
     for number, row in enumerate(records, start=1):
-        if not isinstance(row, dict) or set(row) != required:
-            raise OdsError("ODS_RECORD_FIELDS_INVALID")
+        if not isinstance(row, dict):
+            raise OdsError("ODS_RECORD_FIELDS_INVALID", detail="record_type_invalid")
+        present = set(row)
+        if present != required:
+            raise _record_fields_error(table, required, present)
         validate_dataset(row["dataset_id"])
         validate_batch(row["etl_batch_date"])
         if number == 1:
@@ -311,8 +335,50 @@ def validate_snapshot(df, table):
     return result
 
 
+def _finance_summary_batch(value):
+    if isinstance(value, datetime) and not pd.isna(value):
+        if value.tzinfo is not None or value.time() != time.min or getattr(value, "nanosecond", 0):
+            raise OdsError("ODS_BATCH_INVALID")
+        value = value.date()
+    return validate_batch(value.isoformat() if type(value) is date else value)
+
+
+def _finance_summary_records(frame, table):
+    by_batch = {}
+    for row in frame.to_dict(orient="records"):
+        batch = _finance_summary_batch(row["etl_batch_date"])
+        dept = row["dept"]
+        validate_text(dept)
+        if not dept.strip():
+            raise OdsError("ODS_FINANCE_DEPARTMENT_INVALID")
+        raw = row["amount"]
+        if type(raw) not in (str, int, float, Decimal):
+            raise OdsError("ODS_FINANCE_AMOUNT_INVALID")
+        amount = str(raw)
+        validate_text(amount)
+        try:
+            if not Decimal(amount).is_finite():
+                raise InvalidOperation
+        except InvalidOperation:
+            raise OdsError("ODS_FINANCE_AMOUNT_INVALID") from None
+        records = by_batch.setdefault(batch, [])
+        records.append(dict(
+            record_id="", stat_date="", dept_code=dept, revenue=amount, drug_revenue="", consumable_revenue="",
+            dataset_id=FINANCE_SUMMARY_PREFIX + batch, source_row_number=len(records) + 1, etl_batch_date=batch,
+        ))
+    if not by_batch:
+        raise OdsError("ODS_SNAPSHOT_EMPTY")
+    return [row for records in by_batch.values() for row in validate_snapshot(records, table)]
+
+
 def load_to_ods(df, table):
-    rows = validate_snapshot(df, table)
+    summary = (isinstance(table, str) and table == "ods_finance_excel" and isinstance(df, pd.DataFrame)
+               and df.columns.is_unique and set(df.columns) == _FINANCE_SUMMARY_COLUMNS)
+    rows = _finance_summary_records(df, table) if summary else validate_snapshot(df, table)
+    if not summary and rows[0]["dataset_id"].startswith(FINANCE_SUMMARY_PREFIX):
+        raise OdsError("ODS_DATASET_RESERVED")
+    dataset_counts = Counter(row["dataset_id"] for row in rows)
+    datasets = sorted(dataset_counts)
     columns = TABLES[table] + METADATA + ("etl_load_time",)
     load_time = datetime.now(timezone.utc).replace(tzinfo=None)
     values = [tuple(row[column] for column in columns[:-1]) + (load_time,) for row in rows]
@@ -323,11 +389,13 @@ def load_to_ods(df, table):
     try:
         connection.begin()
         with connection.cursor() as cursor:
-            cursor.execute(f"DELETE FROM `{table}` WHERE dataset_id=%s", (rows[0]["dataset_id"],))
+            for dataset in datasets:
+                cursor.execute(f"DELETE FROM `{table}` WHERE dataset_id=%s", (dataset,))
             cursor.executemany(insert, values)
-            cursor.execute(f"SELECT COUNT(*) FROM `{table}` WHERE dataset_id=%s", (rows[0]["dataset_id"],))
-            if cursor.fetchone()[0] != len(rows):
-                raise OdsError("ODS_COUNT_MISMATCH")
+            for dataset in datasets:
+                cursor.execute(f"SELECT COUNT(*) FROM `{table}` WHERE dataset_id=%s", (dataset,))
+                if cursor.fetchone()[0] != dataset_counts[dataset]:
+                    raise OdsError("ODS_COUNT_MISMATCH")
         connection.commit()
     except Exception:
         try:

@@ -6,6 +6,7 @@ from functools import wraps
 import hashlib
 import hmac
 import json
+from numbers import Integral
 import os
 import re
 import unicodedata
@@ -63,7 +64,7 @@ SAFE_CODES = frozenset(('DWD_ARGUMENTS_INVALID DWD_CONFIG_INVALID DWD_SCHEMA_INV
     'DWD_COMMIT_UNKNOWN DWD_INTERNAL_ERROR DQ_READ_RETRYABLE DQ_ARGUMENTS_INVALID '
     'DQ_CONFIG_INVALID DQ_SNAPSHOT_MISMATCH DQ_STALE DQ_RULE_ERROR DQ_INTERNAL_ERROR '
     'DQ_REPORT_PATH_INVALID DQ_REPORT_IDENTITY_CONFLICT DQ_REPORT_WRITE_FAILED '
-    'DQ_GATE_FAILED DQ_INSUFFICIENT_EVIDENCE').split())
+    'DQ_GATE_FAILED DQ_INSUFFICIENT_EVIDENCE ODS_DATABASE_URL_MISSING ODS_DATABASE_URL_INVALID').split())
 
 
 def _safe(code):
@@ -88,7 +89,9 @@ def _missing(value):
         not isinstance(value, (str, list, dict)) and bool(pd.isna(value)))
 
 
-def _valid_id(value):
+def _valid_id(value, *, integer=False):
+    if integer and isinstance(value, Integral) and not isinstance(value, bool):
+        return True
     return (isinstance(value, str) and 1 <= len(value) <= 128 and value == value.strip()
             and not any(unicodedata.category(ch) == 'Cc' for ch in value))
 
@@ -145,13 +148,13 @@ def dedupe(df, keys):
             or any(k not in df.columns for k in keys) or len(set(keys)) != len(keys)
             or not df.columns.is_unique):
         raise ValueError
-    records = df.to_dict('records')
+    records = df.astype(object).where(df.notna(), None).to_dict('records')
     groups = {}
     counts = dict(invalid_id_rows=0, conflicting_id_rows=0, duplicate_removed=0)
     group_keys = list(dict.fromkeys((['dataset_id'] if 'dataset_id' in df.columns else []) + list(keys)))
     business = [col for col in df.columns if col not in (*META, 'etl_load_time', 'source_batch_date')]
     for index, row in enumerate(records):
-        if not all(_valid_id(row[k]) for k in group_keys):
+        if not all(_valid_id(row[key], integer=key != 'dataset_id') for key in group_keys):
             counts['invalid_id_rows'] += 1
             continue
         groups.setdefault(tuple(row[k] for k in group_keys), []).append(index)
@@ -159,6 +162,14 @@ def dedupe(df, keys):
     for indexes in groups.values():
         first = records[indexes[0]]
         if any(any(row[col] != first[col] for col in business) for row in (records[i] for i in indexes)):
+            if 'updated_at' in df.columns:
+                timestamps = pd.to_datetime([records[i]['updated_at'] for i in indexes],
+                                            format='ISO8601', utc=True, errors='coerce')
+                latest = timestamps == timestamps.max()
+                if timestamps.notna().all() and latest.sum() == 1:
+                    retained.append(indexes[latest.argmax()])
+                    counts['duplicate_removed'] += len(indexes) - 1
+                    continue
             counts['conflicting_id_rows'] += len(indexes)
             continue
         chosen = min(indexes, key=lambda i: records[i]['source_row_number']) if 'source_row_number' in df.columns else indexes[0]
@@ -704,7 +715,7 @@ def load_quality_snapshot_from_cursor(cursor, batch_date=None, *, dataset_id=Non
         source = SOURCES[spec['source']]
         rows = _source(cursor, table, selected)
         columns = spec['columns']
-        cursor.execute('SELECT ' + ','.join(f'`{col}`' for col in columns) + f" FROM `{table}` WHERE dataset_id=%s ORDER BY BINARY `{spec['id_column']}`", (selected,))
+        cursor.execute('SELECT ' + ','.join(f'`{col}`' for col in columns) + f" FROM `{table}` WHERE dataset_id=%s ORDER BY `{spec['id_column']}`", (selected,))
         dwd_rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
         result['tables'][table] = dict(source=dict(table=source['table'], columns=list(source['columns'] + META), rows=rows),
                                        dwd=dict(table=table, columns=list(columns), rows=dwd_rows), audit=audits[table])

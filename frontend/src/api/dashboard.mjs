@@ -20,7 +20,7 @@ export function buildQuery(filters = {}) {
   return params.toString() ? `?${params}` : ''
 }
 
-export function validateDashboard(data, source = 'csv') {
+export function validateDashboard(data, source = 'csv', department = null) {
   const require = condition => {
     if (!condition) throw new DashboardError('服务响应不符合门诊数据合同，请检查后端。')
   }
@@ -28,7 +28,7 @@ export function validateDashboard(data, source = 'csv') {
   const { filters, meta, outpatient_visits: visits, daily_trend: trend, department_ranking: ranking } = data
   require(filters && meta && Array.isArray(trend) && Array.isArray(ranking) && isCount(visits))
   require(isDate(filters.start_date) && isDate(filters.end_date) && filters.start_date <= filters.end_date)
-  require(source === 'csv' || source === 'preview')
+  require(['csv', 'preview', 'ads'].includes(source))
   require(isDate(meta.available_start_date) && isDate(meta.available_end_date)
     && meta.available_start_date <= meta.available_end_date)
   require(Array.isArray(meta.department_codes) && meta.department_codes.every(code => typeof code === 'string' && code.length > 0)
@@ -43,9 +43,14 @@ export function validateDashboard(data, source = 'csv') {
   require(new Set(ranking.map(row => row.dept_code)).size === ranking.length)
   require(trend.reduce((sum, row) => sum + row.visits, 0) === visits
     && ranking.reduce((sum, row) => sum + row.visits, 0) === visits)
-  if (source === 'preview') {
+  if (source !== 'csv') {
+    if (department !== null) {
+      require(filters.dept_code === department
+        && meta.department_codes.length === 1 && meta.department_codes[0] === department)
+    }
+    const expectedSource = source === 'ads' ? 'ads_outpatient_theme' : 'dwd_visit_detail'
     require(filters.start_date >= meta.available_start_date && filters.end_date <= meta.available_end_date)
-    require(meta.source === 'dwd_visit_detail' && isDate(meta.batch_date)
+    require(meta.source === expectedSource && isDate(meta.batch_date)
       && typeof meta.build_run_id === 'string'
       && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(meta.build_run_id)
       && meta.source_file === undefined && meta.quality === undefined)
@@ -67,8 +72,12 @@ export function validateDashboard(data, source = 'csv') {
   return data
 }
 
-export function createDashboardLoader({ fetchImpl = fetch, onChange, source = 'csv' }) {
-  const endpoint = source === 'preview' ? '/api/dashboard/outpatient-preview' : '/api/dashboard/overview'
+export function createDashboardLoader({ fetchImpl = fetch, onChange, source = 'csv', department = null, endpoint }) {
+  const url = endpoint ?? {
+    ads: '/api/v1/outpatient/summary',
+    preview: '/api/dashboard/outpatient-preview',
+    csv: '/api/dashboard/overview',
+  }[source]
   let sequence = 0
   let controller
   let lastFilters = {}
@@ -78,8 +87,9 @@ export function createDashboardLoader({ fetchImpl = fetch, onChange, source = 'c
     controller?.abort()
     controller = new AbortController()
     const currentController = controller
-    lastFilters = { ...filters }
     const requestedFilters = { ...filters }
+    if (department !== null) requestedFilters.dept_code = department
+    lastFilters = requestedFilters
     const publish = state => {
       if (requestId === sequence) onChange({ ...state, requestedFilters })
     }
@@ -88,19 +98,26 @@ export function createDashboardLoader({ fetchImpl = fetch, onChange, source = 'c
     const timer = setTimeout(() => { timedOut = true; currentController.abort() }, 15000)
     try {
       const query = buildQuery(requestedFilters)
-      const response = await fetchImpl(`${endpoint}${query}`, {
+      const response = await fetchImpl(`${url}${query}`, {
         signal: currentController.signal, headers: { Accept: 'application/json' }, cache: 'no-store',
       })
       if (!response.ok) {
-        const reason = response.status === 422 ? '筛选参数未通过后端校验，请检查日期与科室。'
-          : response.status === 503
-            ? (source === 'preview' ? '宽表构建不可用或已过期，请核对本地预览配置和构建号。' : '聚合数据暂不可用，请检查后端加工结果。')
-            : '门诊服务请求失败。'
+        const unavailable = {
+          ads: '门诊集市暂不可用，请核对数据发布状态。',
+          preview: '宽表构建不可用或已过期，请核对本地预览配置和构建号。',
+          csv: '聚合数据暂不可用，请检查后端加工结果。',
+        }
+        const reason = {
+          401: '登录已失效，请重新登录。',
+          403: '当前账号无权查看所选科室。',
+          422: '筛选参数未通过后端校验，请检查日期与科室。',
+          503: unavailable[source],
+        }[response.status] || '门诊服务请求失败。'
         throw new DashboardError(`${reason}（HTTP ${response.status}）`)
       }
       const payload = await response.json()
       if (payload?.code !== 0) throw new DashboardError('门诊服务返回错误，请检查后端。')
-      const data = validateDashboard(payload.data, source)
+      const data = validateDashboard(payload.data, source, department)
       const expected = {
         start_date: requestedFilters.start_date || data.meta.available_start_date,
         end_date: requestedFilters.end_date || data.meta.available_end_date,

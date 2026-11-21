@@ -21,6 +21,7 @@ frontend/dist/
 /etl/logs/
 /artifacts/
 .coverage*
+!.coveragerc
 htmlcov/
 
 # Project-local runtime binaries and generated database state.

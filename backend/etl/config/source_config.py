@@ -39,15 +39,16 @@ SOURCES = {
     },
 }
 CONFIG_FIELDS = ("kind", "file_path", "dataset_id", "etl_batch_date")
+FINANCE_SUMMARY_PREFIX = "ods-finance-summary-v1."
 LOGGER = logging.getLogger(__name__)
 
 
 class OdsError(Exception):
-    """Only internally chosen reason codes cross CLI/library boundaries."""
+    """Safe reason codes and internally generated diagnostics."""
 
-    def __init__(self, code):
+    def __init__(self, code, *, detail=None):
         self.code = code
-        super().__init__(code)
+        super().__init__(code if detail is None else f"{code}: {detail}")
 
 
 def validate_dataset(dataset):
@@ -135,6 +136,8 @@ def validate_source(name, conn_info):
             or conn_info["kind"] != "csv"):
         raise OdsError("ODS_CONFIG_INVALID")
     validate_dataset(conn_info["dataset_id"])
+    if conn_info["dataset_id"].startswith(FINANCE_SUMMARY_PREFIX):
+        raise OdsError("ODS_DATASET_RESERVED")
     validate_batch(conn_info["etl_batch_date"])
     try:
         path = Path(conn_info["file_path"])

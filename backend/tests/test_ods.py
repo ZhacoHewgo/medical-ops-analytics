@@ -1,6 +1,8 @@
 """O5: isolated SIM fixtures; real MySQL requires explicit hospital_test URL."""
 
 import csv
+from datetime import date
+from decimal import Decimal
 import hashlib
 import json
 import os
@@ -159,6 +161,37 @@ def test_unknown_table_and_dataframe_adapter():
     frame.to_dict.return_value = records("lis_report")
     assert ods.validate_snapshot(frame, "ods_lis_report") == records("lis_report")
     frame.to_dict.assert_called_once_with(orient="records")
+
+
+def test_snapshot_shape_error_counts_fields_without_leaking_input(monkeypatch):
+    row = records("lis_report")[0]
+    row.pop("dataset_id")
+    row.pop("source_row_number")
+    row.pop("result_text")
+    row["SIM_PRIVATE_UNKNOWN_COLUMN"] = "SIM_PRIVATE_VALUE"
+    connector = MagicMock()
+    monkeypatch.setattr(ods, "connect_database", connector)
+    with pytest.raises(sources.OdsError) as error:
+        ods.load_to_ods([row], "ods_lis_report")
+    assert error.value.code == "ODS_RECORD_FIELDS_INVALID"
+    assert "metadata_missing=dataset_id,source_row_number" in str(error.value)
+    assert "business_missing=1 unexpected=1 duplicate=0" in str(error.value)
+    assert "table=ods_lis_report business_positions=5 known_extra=-" in str(error.value)
+    for name in ("SIM_PRIVATE_UNKNOWN_COLUMN", "SIM_PRIVATE_VALUE", "result_text"):
+        assert name not in str(error.value)
+    connector.assert_not_called()
+
+
+def test_dataframe_rejects_duplicate_columns_before_record_conversion(monkeypatch):
+    frame = ods.pd.DataFrame(records("lis_report"))
+    frame = ods.pd.concat([frame, frame[["result_text"]]], axis=1)
+    connector = MagicMock()
+    monkeypatch.setattr(ods, "connect_database", connector)
+    with pytest.raises(sources.OdsError) as error:
+        ods.load_to_ods(frame, "ods_lis_report")
+    assert error.value.code == "ODS_RECORD_FIELDS_INVALID"
+    assert "duplicate=1" in str(error.value)
+    connector.assert_not_called()
 
 
 def test_snapshot_accepts_complete_out_of_order_sequence():
@@ -406,6 +439,70 @@ def test_mysql_six_schema_and_full_sim_roundtrip(mysql):
         assert digest(fetch(spec["table"], datasets[0])) == digest(rows)
         total += len(rows)
     assert total == 1574
+
+
+def test_finance_summary_rejects_invalid_input_before_connect(monkeypatch):
+    connector = MagicMock()
+    monkeypatch.setattr(ods, "connect_database", connector)
+    sample = {"dept": "SIM_DEPT_01", "amount": 12.25, "etl_batch_date": BATCH}
+    for invalid in (
+        [sample],
+        ods.pd.DataFrame([{**sample, "amount": float("nan")}]),
+        ods.pd.DataFrame([sample, {**sample, "etl_batch_date": "2025-2-30"}]),
+        ods.pd.DataFrame([{**sample, "unknown": "SIM"}]),
+    ):
+        with pytest.raises(sources.OdsError):
+            ods.load_to_ods(invalid, "ods_finance_excel")
+    connector.assert_not_called()
+
+
+def test_mysql_finance_dataframe_reloads_only_its_batch(mysql):
+    directory, datasets = mysql
+    manual_dataset = datasets[0]
+    table = "ods_finance_excel"
+    batch, earlier = "2099-10-02", "2099-10-01"
+    projection = f"ods-finance-summary-v1.{batch}"
+    other_projection = f"ods-finance-summary-v1.{earlier}"
+    assert not fetch(table, projection) and not fetch(table, other_projection)
+    datasets.extend((projection, other_projection))
+    manual = records("finance_excel", manual_dataset)
+    assert ods.load_to_ods(manual, table) == 3
+    before = fetch(table, manual_dataset, True)
+    frame = ods.pd.DataFrame([
+        {"dept": "SIM_DEPT_01", "amount": Decimal("42.50"), "etl_batch_date": ods.pd.Timestamp(batch)},
+        {"dept": "SIM_DEPT_01", "amount": -3, "etl_batch_date": ods.pd.Timestamp(batch)},
+    ])
+    untouched_frame = frame.copy(deep=True)
+    assert ods.load_to_ods(frame.assign(etl_batch_date=earlier), table) == 2
+    earlier_rows = fetch(table, other_projection, True)
+    assert ods.load_to_ods(frame, table) == 2
+    expected = [
+        {"record_id": "", "stat_date": "", "dept_code": "SIM_DEPT_01", "revenue": amount,
+         "drug_revenue": "", "consumable_revenue": "", "dataset_id": projection,
+         "source_row_number": index, "etl_batch_date": date.fromisoformat(batch)}
+        for index, amount in enumerate(("42.50", "-3"), 1)
+    ]
+    assert fetch(table, projection) == expected
+    assert ods.load_to_ods(frame, table) == 2
+    assert fetch(table, projection) == expected
+    assert ods.load_to_ods(frame.iloc[:1], table) == 1
+    assert fetch(table, projection) == expected[:1]
+    assert fetch(table, other_projection, True) == earlier_rows
+    assert fetch(table, manual_dataset, True) == before
+    mixed = ods.pd.concat([frame, frame.iloc[1:].assign(etl_batch_date=earlier)], ignore_index=True)
+    assert ods.load_to_ods(mixed, table) == 3
+    assert fetch(table, projection) == expected
+    assert fetch(table, other_projection) == [
+        {**expected[1], "dataset_id": other_projection, "source_row_number": 1, "etl_batch_date": date.fromisoformat(earlier)}
+    ]
+    assert ods.load_to_ods(mixed, table) == 3
+    assert fetch(table, projection) == expected
+    assert fetch(table, manual_dataset, True) == before
+    ods.pd.testing.assert_frame_equal(frame, untouched_frame)
+    with pytest.raises(sources.OdsError, match="ODS_DATASET_RESERVED"):
+        ods.load_to_ods(records("finance_excel", projection), table)
+    with pytest.raises(sources.OdsError, match="ODS_DATASET_RESERVED"):
+        sources.validate_source("finance_excel", {**config(directory, "finance_excel"), "dataset_id": projection})
 
 
 def test_mysql_repeat_shrink_isolation_and_rollback(mysql, monkeypatch):

@@ -111,7 +111,7 @@ def fixture(days=(("2025-01-01", 10), ("2025-01-02", 10))):
 
 class QualityTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory(dir="/private/tmp")
+        self.tmp = tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve())
         self.addCleanup(self.tmp.cleanup)
         self.config = dict(rules_version="node07-rules-v1", mapping_version="node07-sim-mapping-v1", approved_complete_intervals=[])
         self.snap = fixture()
@@ -131,10 +131,11 @@ class QualityTests(unittest.TestCase):
     def path(self):
         return Path(self.tmp.name) / "logs/test/quality_report_20250103.json"
 
-    def assert_code(self, code, call):
+    def assert_code(self, code, call, *, detail=None):
         with self.assertRaises(OdsError) as caught:
             call()
-        self.assertTrue(str(caught.exception) == code)
+        self.assertEqual(caught.exception.code, code)
+        self.assertEqual(str(caught.exception), code if detail is None else f"{code}: {detail}")
         self.assertTrue(caught.exception.__suppress_context__)
 
     def test_34_fixed_denominator_and_no_snapshot_mutation(self):
@@ -287,8 +288,54 @@ class QualityTests(unittest.TestCase):
         self.assert_code("DQ_ARGUMENTS_INVALID", lambda: q.check_null_ratio("select secret", ["patient_id"], snapshot=self.snap))
         self.assert_code("DQ_ARGUMENTS_INVALID", lambda: q.check_null_ratio(SPECS[0][0], ["diagnosis"], snapshot=self.snap))
         self.assert_code("DQ_ARGUMENTS_INVALID", lambda: q.check_volume_wave(SPECS[0][0], threshold=0.31, snapshot=self.snap))
-        self.assert_code("DQ_ARGUMENTS_INVALID", lambda: q.generate_quality_report(BATCH, env="dev"))
-        self.assert_code("DQ_ARGUMENTS_INVALID", lambda: q.generate_quality_report("2025-02-30", env="test"))
+        self.assert_code("DQ_ARGUMENTS_INVALID", lambda: q.generate_quality_report(BATCH, env="dev"),
+                         detail="DATABASE_ENV_MISMATCH")
+        self.assert_code("DQ_ARGUMENTS_INVALID", lambda: q.generate_quality_report("2025-02-30", env="test"),
+                         detail="BATCH_DATE_INVALID")
+
+    def test_report_accepts_and_normalizes_date_objects(self):
+        report = q.generate_quality_report(date.fromisoformat(BATCH), dataset_id=DATASET, env="test")
+        self.assertEqual(report["batch_date"], BATCH)
+
+    def test_report_normalizes_compact_batch_dates(self):
+        report = q.generate_quality_report(BATCH.replace("-", ""), dataset_id=DATASET, env="test")
+        self.assertEqual(report["batch_date"], BATCH)
+        self.assert_code("DQ_ARGUMENTS_INVALID", lambda: q.generate_quality_report("20250230", env="test"),
+                         detail="BATCH_DATE_INVALID")
+
+    def test_report_normalizes_unambiguous_dated_values(self):
+        for batch in (20250103, datetime.fromisoformat("2025-01-03T00:00:00+08:00"),
+                      " 2025-01-03T00:00:00+08:00 ", " 2025-01-03 ",
+                      "2025/1/3", "2025.01.03", "2025-1-3", "2025年1月3日"):
+            with self.subTest(batch=batch):
+                report = q.generate_quality_report(batch, dataset_id=DATASET, env="test")
+                self.assertEqual(report["batch_date"], BATCH)
+
+    def test_report_argument_errors_identify_reason_without_input_values(self):
+        cases = (
+            ("SIM_PRIVATE_BATCH", "test", DATASET, "BATCH_DATE_LABEL_NOT_CALENDAR"),
+            ("01/03/2025", "test", DATASET, "BATCH_DATE_INVALID_TEXT"),
+            (None, "test", DATASET, "BATCH_DATE_MISSING"),
+            ("", "test", DATASET, "BATCH_DATE_MISSING"),
+            ("2025-01", "test", DATASET, "BATCH_DATE_MISSING_DAY"),
+            ("202501", "test", DATASET, "BATCH_DATE_MISSING_DAY"),
+            ({"private": "value"}, "test", DATASET, "BATCH_DATE_INVALID_TYPE"),
+            (BATCH, "SIM_PRIVATE_ENV", DATASET, "REPORT_ENV_INVALID"),
+            (BATCH, "test", "SIM PRIVATE DATASET", "DATASET_SELECTOR_INVALID"),
+            (BATCH, "dev", DATASET, "DATABASE_ENV_MISMATCH"),
+        )
+        for batch, env, dataset, detail in cases:
+            with self.subTest(detail=detail):
+                self.assert_code("DQ_ARGUMENTS_INVALID",
+                                 lambda: q.generate_quality_report(batch, env=env, dataset_id=dataset),
+                                 detail=detail)
+
+    def test_report_distinguishes_database_config_from_invalid_arguments(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assert_code("ODS_DATABASE_URL_MISSING", self.report)
+        with patch.dict(os.environ, {"ODS_DATABASE_URL": "SIM_BAD_URL"}):
+            self.assert_code("ODS_DATABASE_URL_INVALID", self.report)
+        self.assertFalse(self.path().exists())
 
     def test_report_identity_conflict_and_write_failure_preserve_old(self):
         self.report(); old = self.path().read_bytes()

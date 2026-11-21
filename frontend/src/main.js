@@ -1,15 +1,18 @@
 import { createApp, h } from 'vue'
 import { createPinia } from 'pinia'
-import { createRouter, createWebHistory, RouterView } from 'vue-router'
-import App from './App.vue'
+import { RouterView } from 'vue-router'
+import { createAppRouter } from './router/index.js'
+import { useSession } from './store/user.js'
 import './style.css'
 
-const router = createRouter({
-  history: createWebHistory(),
-  routes: [{ path: '/', component: App }],
-})
+const pinia = createPinia()
+const router = createAppRouter(useSession(pinia))
 
-createApp({ render: () => h(RouterView) })
-  .use(createPinia())
+createApp({
+  render: () => h(RouterView, null, {
+    default: ({ Component, route }) => Component ? h(Component, { key: route.path }) : null,
+  }),
+})
+  .use(pinia)
   .use(router)
   .mount('#app')

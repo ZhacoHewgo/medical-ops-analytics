@@ -519,8 +519,16 @@ def _upstream(snapshot,report,env):
 
 def _date_snapshot(cursor,snapshot):
     dates={}
+    tables=snapshot.get('tables') if isinstance(snapshot,dict) else None
+    by_source={spec['source']:name for name,spec in clean.TABLES.items()}
     for source,column in DATE_COLUMNS.items():
         if source=='inpatient_discharge': continue
+        entry=tables.get(by_source.get(source)) if tables else None
+        loaded=entry['source'].get('rows') if isinstance(entry,dict) and isinstance(entry.get('source'),dict) else None
+        if loaded is not None:
+            dates[source]=[row[column] for row in loaded]
+            if source=='his_inpatient': dates['inpatient_discharge']=[None if row['discharge_date'] in (None,'') else row['discharge_date'] for row in loaded]
+            continue
         table=SOURCES[source]['table']
         columns=[column]+(['discharge_date'] if source=='his_inpatient' else [])
         cursor.execute('SELECT '+','.join(f'`{c}`' for c in columns)+f' FROM `{table}` WHERE dataset_id=%s ORDER BY source_row_number',(snapshot['dataset_id'],))
