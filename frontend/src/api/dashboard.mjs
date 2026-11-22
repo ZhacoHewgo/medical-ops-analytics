@@ -72,6 +72,16 @@ export function validateDashboard(data, source = 'csv', department = null) {
   return data
 }
 
+export function trendTransitionSeed(previous, next) {
+  if (!previous) return undefined
+  if (previous.filters.dept_code !== next.filters.dept_code || previous.meta.batch_date !== next.meta.batch_date
+      || previous.meta.build_run_id !== next.meta.build_run_id) return []
+
+  const dates = new Set(next.daily_trend.map(row => row.date))
+  if (previous.daily_trend.filter(row => dates.has(row.date)).length < 2) return []
+  return previous.daily_trend.map(row => dates.has(row.date) ? row : { date: row.date, visits: null })
+}
+
 export function createDashboardLoader({ fetchImpl = fetch, onChange, source = 'csv', department = null, endpoint }) {
   const url = endpoint ?? {
     ads: '/api/v1/outpatient/summary',

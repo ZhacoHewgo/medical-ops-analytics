@@ -44,10 +44,14 @@ try {
   await page.goto(base + '/ops/sources')
   await page.waitForURL(url => url.pathname === '/login')
   await signIn(page, 'admin')
-  await checked(() => page.getByRole('link', { name: '数据源与任务' }).click(), 'GET', sources)
+  await page.getByRole('link', { name: '数据源与任务' }).click()
   const outpatient = page.getByRole('row', { name: /门诊/ })
   await outpatient.getByText('已登记', { exact: true }).waitFor()
   assert.equal(await page.getByText('已登记', { exact: true }).count(), 6)
+  assert.equal(await page.getByRole('columnheader', { name: '源文件' }).count(), 1)
+  for (const name of ['his_outpatient', 'his_inpatient', 'his_charge', 'emr_record', 'lis_report', 'finance_excel']) {
+    assert.equal(await page.getByRole('cell', { name: name + '.csv', exact: true }).count(), 1)
+  }
   await outpatient.getByRole('button', { name: '检查文件' }).click()
   await page.getByRole('button', { name: '取消', exact: true }).click()
   assert.deepEqual(writes, [])
@@ -55,7 +59,7 @@ try {
   assert.equal((await checked(() => page.getByRole('button', { name: '确认检查' }).click(), 'POST',
     sources + '/his_outpatient/check')).outcome, 'SUCCESS')
   await page.getByText('登记文件检查通过。').waitFor()
-  assert.equal(await page.getByText(/mock_his|\.csv/).count(), 0)
+  assert.equal(await page.getByText(/mock_his\/|files\//).count(), 0)
 
   await checked(() => page.getByRole('link', { name: '任务管理' }).click(), 'GET', tasks)
   const extract = page.getByRole('row', { name: /ODS 采集/ })

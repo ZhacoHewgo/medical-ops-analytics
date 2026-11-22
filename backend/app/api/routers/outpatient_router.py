@@ -7,7 +7,7 @@ from app.api.responses import UNAUTHORIZED_EXAMPLE, VALIDATION_EXAMPLE
 from app.core.auth_store import Account, DB_DOWN, SHARED, read_user
 from app.core.deps import get_current_user
 from app.core.security import unauthorized
-from app.schemas.outpatient import ErrorResponse, ExportRequest, OutpatientQuery, ReportQuery, ReportResponse, SummaryResponse
+from app.schemas.outpatient import ErrorResponse, ExportRequest, OutpatientDashboardResponse, OutpatientQuery, ReportQuery, ReportResponse
 from app.services.export_service import PDF, XLSX, export_report, report_rows
 from app.services.indicator_service import query_indicator
 from etl.config.source_config import OdsError, database_cursor
@@ -61,6 +61,9 @@ def _serve(query, user, action, *, grouped=False):
         else:
             if grouped:
                 summary["data"].update(group_by=query.group_by, rows=report_rows(document, query.group_by))
+            else:
+                summary["data"]["registration_mix"] = document.get("registration_mix", [])
+                summary["data"]["outpatient_avg_cost"] = document.get("outpatient_avg_cost")
             result = summary
     except HTTPException as error:
         audit_access(user, action, user.department, error.status_code)
@@ -69,7 +72,7 @@ def _serve(query, user, action, *, grouped=False):
     return result
 
 
-@router.get("/outpatient/summary", response_model=SummaryResponse, responses=ERRORS,
+@router.get("/outpatient/summary", response_model=OutpatientDashboardResponse, responses=ERRORS,
             summary="读取已完整发布的门诊日人次", operation_id="outpatient_summary_api_v1_outpatient_summary_get")
 def get_outpatient_metrics(query: Annotated[OutpatientQuery, Query()], response: Response,
                        user: Annotated[Account, Depends(get_current_user)]):

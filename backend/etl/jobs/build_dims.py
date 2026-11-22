@@ -506,12 +506,12 @@ def _upstream(snapshot,report,env):
         quality._validate_snapshot(snapshot,rules_version=config['rules_version'])
         rules=[]
         for table,kind in quality._CATALOG:
-            entry=snapshot['tables'][table]; spec=quality._SPECS[table]
-            if kind=='NULL': rule=quality.check_null_ratio(table,(spec[2],spec[3],*spec[5].split()),snapshot=snapshot)
-            elif kind=='DUPLICATE': rule=quality.check_duplicate(table,('dataset_id',spec[2]),snapshot=snapshot)
-            elif kind=='VALUE_RANGE': rule=quality.check_value_range(table,spec[6].split(),snapshot=snapshot)
+            entry=snapshot['tables'][table]
+            if kind=='NULL': rule=quality._null_ratio(table,entry)
+            elif kind=='DUPLICATE': rule=quality._duplicate(table,entry)
+            elif kind=='VALUE_RANGE': rule=quality._value_range(table,entry)
             elif kind=='VOLUME_WAVE': rule=quality._volume_wave(table,entry,snapshot,config)
-            elif kind=='RECONCILE': rule=quality.check_reconcile(entry['source']['table'],table,entry['audit'],snapshot=snapshot)
+            elif kind=='RECONCILE': rule=quality._reconcile(table,entry)
             elif kind=='MAPPING': rule=quality._check_mapping(table,snapshot)
             else: rule=quality._check_privacy(table,snapshot,env=env)
             if rule['code']=='STALE': _fail('N8_STALE')

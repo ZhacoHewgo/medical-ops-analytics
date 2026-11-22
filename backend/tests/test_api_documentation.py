@@ -25,7 +25,9 @@ VALIDATION_422 = {
     ("GET", "/api/v1/disease/summary"),
     ("GET", "/api/v1/inpatient/summary"),
     ("GET", "/api/v1/outpatient/summary"),
+    ("GET", "/api/v1/overview/summary"),
     ("GET", "/api/v1/reports/outpatient"),
+    ("GET", "/api/v1/reports/multidimensional"),
     ("GET", "/api/v1/resource/summary"),
     ("GET", "/api/v1/revenue/summary"),
     ("POST", "/api/llm/anomaly"),
@@ -33,6 +35,7 @@ VALIDATION_422 = {
     ("POST", "/api/llm/query"),
     ("POST", "/api/llm/report"),
     ("POST", "/api/v1/reports/export"),
+    ("POST", "/api/v1/reports/multidimensional/export"),
     ("PUT", "/api/ops/sources/registration"),
 }
 
@@ -71,8 +74,8 @@ def operations(enabled):
 
 
 def test_schema_keeps_documented_surface(operations):
-    assert len(operations) == 28
-    assert len({path for _, path in operations}) == 25
+    assert len(operations) == 32
+    assert len({path for _, path in operations}) == 29
 
 
 def test_every_operation_has_tag_and_summary(operations):

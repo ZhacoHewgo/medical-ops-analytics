@@ -36,18 +36,24 @@ try {
   }
   const assertHeading = async (text) => page.getByRole('heading', { name: text, exact: true }).waitFor()
 
-  async function login(role) {
+  async function login(role, directToReport = false) {
     await page.getByLabel('用户名').fill(usernames[role])
     await page.getByLabel('密码', { exact: true }).fill(password)
-    await page.getByRole('button', { name: '登录', exact: true }).click()
-    await page.waitForURL('**/outpatient')
-    await read(() => page.getByRole('link', { name: '门诊报表' }).click())
+    const submit = () => page.getByRole('button', { name: '登录', exact: true }).click()
+    if (directToReport) {
+      await read(submit)
+      await page.waitForURL('**/reports')
+    } else {
+      await submit()
+      await page.waitForURL('**/outpatient')
+      await read(() => page.getByRole('link', { name: '门诊报表' }).click())
+    }
     await assertHeading('门诊报表')
   }
 
   await page.goto(base + '/reports')
   await page.waitForURL(url => url.pathname === '/login')
-  await login('analyst')
+  await login('analyst', true)
   if (process.env.MOPS_BROWSER_CALENDAR === '1') {
     await assertHeading('日期 × 科室 · 5 人次')
     await page.getByLabel('开始日期').fill('2025-02-01')

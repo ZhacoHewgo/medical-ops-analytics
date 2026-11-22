@@ -16,4 +16,5 @@ router = APIRouter(prefix="/api/v1/revenue", tags=["收入集市"])
 @router.get("/summary", response_model=ThemeSummary, responses=ERRORS, summary="查询收费与收入汇总")
 def list_metrics(query: Annotated[ThemeQuery, Query()], response: Response,
                  user: Annotated[Account, Depends(get_current_user)]):
-    return serve_summary(query, response, user, "revenue", partial(summarize_theme, "income"), drill=query.drill)
+    return serve_summary(query, response, user, "revenue", partial(summarize_theme, "income"),
+                         drill=query.drill, include_income_totals=True)

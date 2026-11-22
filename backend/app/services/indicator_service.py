@@ -9,20 +9,23 @@ from app.outpatient_response import check_dates, summarize_outpatient
 from etl.config.source_config import OdsError
 
 
-def query_indicator(query, user):
+def query_indicator(query, user, *, operations_start=None):
     scope = apply_data_scope(query.dept_code, user)
     check_dates(query.start_date, query.end_date)
     if scope is not None and (not scope.strip() or len(scope) > 64):
         raise HTTPException(422, "Invalid dept_code")
     try:
+        options = {"operations_start": operations_start} if operations_start is not None else {}
         document = load_ads(start_date=query.start_date, end_date=query.end_date, dept_code=scope,
-                            allowed_department=user.department if user.role == "department" else None)
+                            allowed_department=user.department if user.role == "department" else None, **options)
     except (OdsError, ImportError, OSError, ValueError, TypeError, KeyError, AttributeError):
         raise HTTPException(503, "Certified outpatient mart unavailable or incomplete") from None
     meta = document["meta"]
     low, high = meta["available_start_date"], meta["available_end_date"]
     if any(day is not None and not low <= day <= high for day in (query.start_date, query.end_date)):
         raise HTTPException(422, "Dates must be within certified build coverage")
+    if operations_start is not None and document["operations"] is None:
+        raise HTTPException(422, "日期或科室超出认证数据覆盖")
     summary = summarize_outpatient(document, query.start_date, query.end_date, scope)
     return scope, document, summary
 

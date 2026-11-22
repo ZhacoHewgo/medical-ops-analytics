@@ -45,9 +45,9 @@ try {
 
   await page.goto(base + '/admin/users')
   await page.waitForURL(url => url.pathname === '/login')
-  await signIn(page, 'admin')
-  await page.waitForURL('**/outpatient')
-  await checked(() => page.getByRole('link', { name: '用户管理' }).click(), 'GET', listPath, 200)
+  await checked(() => signIn(page, 'admin'), 'GET', listPath, 200)
+  await page.waitForURL('**/admin/users')
+  assert.equal(await page.getByRole('link', { name: '用户管理', exact: true }).getAttribute('aria-current'), 'page')
   await page.getByRole('row', { name: new RegExp(names.admin) }).getByText('受保护').waitFor()
 
   await page.getByLabel('用户名').fill(names.department)

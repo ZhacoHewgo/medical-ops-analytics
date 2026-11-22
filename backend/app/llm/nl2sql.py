@@ -3,6 +3,7 @@ from calendar import monthrange
 from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+import os
 import re
 import time
 from unicodedata import normalize
@@ -538,6 +539,8 @@ def _gap_answer(intent, entry, department):
 
 
 def run_nl_query(question, user, *, generator=None):
+    from etl.config.source_config import COURSE_DATASET
+
     normalized = normalize("NFKC", question) if isinstance(question, str) else ""
     compact = _PUNCTUATION.sub("", normalized)
     if user.role == "department" and any(term in compact for term in _FORBIDDEN_SCOPE):
@@ -545,22 +548,31 @@ def run_nl_query(question, user, *, generator=None):
     intent = parse_intent(question)
     department = _enforce_scope(intent, user)
     entry = catalog.entry(intent.code)
-    if not catalog.is_served(intent.code):
+    course_summary = (intent.code in {"MOPS-INP-04", "MOPS-DRUG-02"}
+                      and os.environ.get("OUTPATIENT_PREVIEW_DATASET_ID") == COURSE_DATASET)
+    if not course_summary and not catalog.is_served(intent.code):
         return _gap_answer(intent, entry, department)
     from app.llm import readers
 
-    if generator is None:
-        plan = generate_sql(intent, user, department=department)
-    else:
-        plan = generate_sql(question, user, department=department, generator=generator)
-        if plan.metric != intent.code:
-            plan = generate_sql(intent, user, department=department)
-    rows = execute_plan(plan)
     deadline = time.monotonic() + BUDGET_SECONDS
-    observation = readers.READERS[intent.code](intent.first, intent.last, department, user, intent.series)
+    if course_summary:
+        if intent.growth:
+            raise HTTPException(422, "当前仅支持门诊人次自然月环比")
+        observation = readers.course_summary(intent.code, intent.first, intent.last, department)
+    else:
+        if generator is None:
+            plan = generate_sql(intent, user, department=department)
+        else:
+            plan = generate_sql(question, user, department=department, generator=generator)
+            if plan.metric != intent.code:
+                plan = generate_sql(intent, user, department=department)
+        rows = execute_plan(plan)
+        deadline = time.monotonic() + BUDGET_SECONDS
+        observation = readers.READERS[intent.code](intent.first, intent.last, department, user, intent.series)
     if time.monotonic() > deadline:
         raise HTTPException(503, "问数查询超出时限，请缩小查询范围后重试")
-    _cross_check(plan, observation, rows)
+    if not course_summary:
+        _cross_check(plan, observation, rows)
     return {
         "indicator_code": intent.code, "unit": observation.get("unit", entry["unit"]),
         "scope": {"department": department}, "chart_type": observation.get("chart_type", "number"),

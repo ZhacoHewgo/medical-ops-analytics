@@ -1,6 +1,17 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { buildQuery, createDashboardLoader, validateDashboard } from '../src/api/dashboard.mjs'
+import { buildQuery, createDashboardLoader, trendTransitionSeed, validateDashboard } from '../src/api/dashboard.mjs'
+
+test('trend interpolation only seeds dates within the same authorized scope and published build', () => {
+  const rows = ['01', '02', '03'].map((day, index) => ({ date: `2025-04-${day}`, visits: index + 1 }))
+  const previous = { filters: { dept_code: 'HN' }, meta: { batch_date: '2025-06-30', build_run_id: 'a' }, daily_trend: rows }
+  const filtered = { ...previous, daily_trend: rows.slice(1) }
+  assert.equal(trendTransitionSeed(undefined, filtered), undefined)
+  assert.deepEqual(trendTransitionSeed(previous, filtered), [{ ...rows[0], visits: null }, ...rows.slice(1)])
+  assert.deepEqual(trendTransitionSeed(previous, { ...filtered, daily_trend: rows.slice(2) }), [])
+  assert.deepEqual(trendTransitionSeed(previous, { ...filtered, filters: { dept_code: 'HX' } }), [])
+  assert.deepEqual(trendTransitionSeed(previous, { ...filtered, meta: { ...filtered.meta, build_run_id: 'b' } }), [])
+})
 
 // Synthetic aggregates are test-only; the application never imports this file.
 const dashboard = () => ({

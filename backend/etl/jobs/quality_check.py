@@ -364,8 +364,14 @@ def _converted(raw, column, row, main_date):
 
 @_safe
 def check_null_ratio(table, columns, *, dataset_id=None, snapshot=None):
-    entry, snapshot = _context(table, dataset_id, snapshot); spec = _SPECS[table]
+    entry, _ = _context(table, dataset_id, snapshot); spec = _SPECS[table]
     _columns(columns, (spec[2], spec[3], *spec[5].split()))
+    return _null_ratio(table, entry)
+
+
+@_safe
+def _null_ratio(table, entry):
+    spec = _SPECS[table]
     rows = entry["dwd"]["rows"]; stats = entry["audit"]["stats_json"]
     required = {c: dict(null_rows=sum(_blank(r[c]) for r in rows), total_rows=len(rows)) for c in (spec[2], spec[3])}
     optional = {}
@@ -384,8 +390,14 @@ def check_null_ratio(table, columns, *, dataset_id=None, snapshot=None):
 
 @_safe
 def check_duplicate(table, keys, *, dataset_id=None, snapshot=None):
-    entry, snapshot = _context(table, dataset_id, snapshot); spec = _SPECS[table]
+    entry, _ = _context(table, dataset_id, snapshot); spec = _SPECS[table]
     _columns(keys, ("dataset_id", spec[2]))
+    return _duplicate(table, entry)
+
+
+@_safe
+def _duplicate(table, entry):
+    spec = _SPECS[table]
     counts = Counter((r["dataset_id"], r[spec[2]]) for r in entry["dwd"]["rows"])
     duplicates = sum(n - 1 for n in counts.values())
     audit = entry["audit"]; conflicts = audit["stats_json"]["quarantined_by_reason"]["conflicting_id_rows"]
@@ -398,8 +410,14 @@ def check_duplicate(table, keys, *, dataset_id=None, snapshot=None):
 
 @_safe
 def check_value_range(table, rules, *, dataset_id=None, snapshot=None):
-    entry, snapshot = _context(table, dataset_id, snapshot); spec = _SPECS[table]
-    _columns(rules, spec[6].split())
+    entry, _ = _context(table, dataset_id, snapshot)
+    _columns(rules, _SPECS[table][6].split())
+    return _value_range(table, entry)
+
+
+@_safe
+def _value_range(table, entry):
+    spec = _SPECS[table]
     stats = entry["audit"]["stats_json"]; fields = {}; causes = []; mismatch = 0
     loss = stats["quarantined_by_reason"]["invalid_primary_date_rows"]
     if loss: causes.append(("SOURCE_INVALID_PRIMARY_DATE", loss, "FAIL", True))
@@ -526,11 +544,16 @@ def _audit_semantics(entry, table):
 
 @_safe
 def check_reconcile(ods_table, dwd_table, clean_log, *, dataset_id=None, snapshot=None):
-    entry, snapshot = _context(dwd_table, dataset_id, snapshot)
+    entry, _ = _context(dwd_table, dataset_id, snapshot)
     if ods_table != entry["source"]["table"]:
         _fail("DQ_ARGUMENTS_INVALID")
     if clean_log != entry["audit"]:
         _fail("DQ_SNAPSHOT_MISMATCH")
+    return _reconcile(dwd_table, entry)
+
+
+@_safe
+def _reconcile(dwd_table, entry):
     audit = entry["audit"]; source_rows = len(entry["source"]["rows"]); dwd_rows = len(entry["dwd"]["rows"])
     source_match = _digest("source", entry["source"]["columns"], entry["source"]["rows"]) == audit["source_sha256"]
     result_match = _digest("dwd", entry["dwd"]["columns"], entry["dwd"]["rows"]) == audit["result_sha256"]

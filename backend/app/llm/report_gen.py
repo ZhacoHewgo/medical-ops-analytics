@@ -2,6 +2,7 @@
 from calendar import monthrange
 from collections import Counter
 from datetime import date, timedelta
+from decimal import Decimal, ROUND_HALF_UP
 import re
 
 from fastapi import HTTPException
@@ -62,12 +63,13 @@ def _unavailable(error):
     return error.status_code == 503 or error.status_code == 422 and error.detail == _DATE_COVERAGE
 
 
-def _read_comparison(kind, first, last, user, department):
+def _read_comparison(kind, first, last, user, department, *, operations=False):
     previous_end = first - timedelta(days=1)
     previous = first - timedelta(days=7) if kind == "weekly" else previous_end.replace(day=1)
 
     def load(start):
-        return query_indicator(OutpatientQuery(**_dates(start, last), dept_code=department), user)
+        options = {"operations_start": first.isoformat()} if operations else {}
+        return query_indicator(OutpatientQuery(**_dates(start, last), dept_code=department), user, **options)
 
     comparable = True
     try:
@@ -96,11 +98,11 @@ def _read_comparison(kind, first, last, user, department):
         "indicator_code": "MOPS-OUT-01", "unit": "人次", "scope": {"department": scope},
         "source": meta["source"], "batch_date": meta["batch_date"], "build_run_id": meta["build_run_id"],
         "period": _dates(first, last), "previous_period": _dates(previous, previous_end),
-    }, current, prior if comparable else None, daily
+    }, current, prior if comparable else None, daily, document.get("operations")
 
 
-def _report(kind, first, last, user, department):
-    meta, current, prior, daily = _read_comparison(kind, first, last, user, department)
+def _report(kind, first, last, user, department, *, operations=False):
+    meta, current, prior, daily, metrics = _read_comparison(kind, first, last, user, department, operations=operations)
     now = sum(current.values())
     before = None if prior is None else sum(prior.values())
     if kind == "monthly":
@@ -128,8 +130,47 @@ def _report(kind, first, last, user, department):
             else "按绝对变化量排序。结合实际排班与统计覆盖核查波动。",
         }),
     )
-    return {**meta, "type": kind, "sections": [{"id": key, "title": title, "data": data}
-                                              for key, title, data in chapters]}
+    report = {**meta, "type": kind, "sections": [{"id": key, "title": title, "data": data}
+                                                for key, title, data in chapters]}
+    return _operations_sections(report, metrics) if operations else report
+
+
+def _operations_sections(report, data):
+    sections = {section["id"]: section for section in report["sections"]}
+    summary = sections["overview"]["data"]
+    trend = sections["trend"]["data"]
+    ranking = sections["department_comparison"]
+    daily, discharges = Counter(), Counter()
+    for row in data["activity"]:
+        target = daily if row["kind"] == "OUTPATIENT" else discharges
+        target[row["date"]] += row["count"]
+    if ({row["dept_code"]: row["visits"] for row in ranking["data"]}
+            != {row["code"]: row["outpatient"] for row in data["departments"] if row["outpatient"]}
+            or {row["date"]: row["visits"] for row in trend if row["visits"]} != dict(daily)):
+        raise HTTPException(503, "本期综合指标与认证门诊数据不一致")
+    total = data["charge_total"] if data["daily_charges"] else None
+    charges = {row["name"]: row["value"] for row in data["charges"] if row["count"]}
+    summary.update(admissions=data["admissions"], discharges=sum(discharges.values()), avg_stay_days=data["avg_stay_days"],
+                   charge_amount=total, outpatient_charge=charges.get("OUTPATIENT"), inpatient_charge=charges.get("INPATIENT"))
+    fees = data["fee_types"]
+    if total is not None and Decimal(total) > 0 and fees and all(
+            row["value"] is not None and Decimal(row["value"]) >= 0 for row in fees):
+        for name, code in (("drug_share", "DRUG"), ("consumable_share", "CONSUMABLE")):
+            amount = sum(Decimal(row["value"]) for row in fees if row["name"] == code)
+            summary[name] = format((amount * 100 / Decimal(total)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP), "f")
+    daily_charges = {row["date"]: row["amount"] for row in data["daily_charges"]}
+    for row in trend:
+        day = row["date"]
+        row.update(discharges=discharges[day], charge_amount=daily_charges.get(day))
+    ranking["data"] = [{"dept_code": row["code"], "visits": row["outpatient"],
+                        "discharges": row["inpatient"], "charge_amount": row["amount"]}
+                       for row in sorted(data["departments"], key=lambda row: (-row["outpatient"], row["code"]))]
+    return report
+
+
+def gen_operations_report(kind, value, user, *, department=None):
+    first, last = (_week if kind == "weekly" else _month)(value)
+    return _report(kind, first, last, user, department, operations=True)
 
 
 def gen_weekly_report(week, user, *, department=None):
@@ -148,7 +189,7 @@ def analyze_anomaly(metric, date_string, user, *, department=None):
     except ValueError:
         raise HTTPException(422, "日期须为有效的 YYYY-MM-DD") from None
     first, last = _month(f"{anchor.year:04d}-{anchor.month:02d}")
-    meta, current, prior, _ = _read_comparison("monthly", first, last, user, department)
+    meta, current, prior, _, _ = _read_comparison("monthly", first, last, user, department)
     if prior is None:
         raise HTTPException(503, "可比上期未完整发布，暂无波动对比")
     return {**meta, "top_changes": rank_changes(current, prior),

@@ -1,3 +1,4 @@
+from decimal import Decimal
 from io import BytesIO
 
 from fastapi import HTTPException, Response
@@ -59,17 +60,24 @@ def export_report(document, summary, group_by="day_department", *, format="xlsx"
     })
 
 
-def export_excel(headings, rows, metadata):
+def export_excel(headings, rows, metadata, *, sheet_name="门诊人次"):
     workbook = Workbook(write_only=True)
-    sheet = workbook.create_sheet("门诊人次")
+    sheet = workbook.create_sheet(sheet_name)
     sheet.append(headings)
     for row in rows:
         cells = []
-        for value in row[:-1]:
-            cell = WriteOnlyCell(sheet, value=value)
-            cell.data_type = "s"
-            cells.append(cell)
-        sheet.append([*cells, row[-1]])
+        for value in row:
+            if isinstance(value, str):
+                cell = WriteOnlyCell(sheet, value=value)
+                cell.data_type = "s"
+                cells.append(cell)
+            elif isinstance(value, Decimal):
+                cell = WriteOnlyCell(sheet, value=value)
+                cell.number_format = "#,##0.00"
+                cells.append(cell)
+            else:
+                cells.append(value)
+        sheet.append(cells)
     source = workbook.create_sheet("数据来源")
     for label, value in metadata:
         cell = WriteOnlyCell(source, value=value)

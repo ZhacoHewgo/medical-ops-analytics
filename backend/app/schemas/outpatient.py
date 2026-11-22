@@ -69,6 +69,19 @@ class SummaryResponse(BaseModel):
     data: Data
 
 
+class RegistrationCount(BaseModel):
+    label: str
+    count: int
+
+
+class OutpatientDashboardResponse(SummaryResponse):
+    class Data(SummaryResponse.Data):
+        registration_mix: list[RegistrationCount] = Field(default_factory=list)
+        outpatient_avg_cost: str | None = None
+
+    data: Data
+
+
 class ReportRow(BaseModel):
     date: str | None
     dept_code: str | None

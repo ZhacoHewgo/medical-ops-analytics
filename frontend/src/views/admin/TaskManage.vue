@@ -1,4 +1,5 @@
 <script setup>
+import WorkspaceHeading from '../../components/WorkspaceHeading.vue'
 import { onMounted, ref, shallowRef } from 'vue'
 import { useManagementRequest } from '../../api/admin.mjs'
 import ScheduleEditor from './ScheduleEditor.vue'
@@ -60,14 +61,13 @@ onMounted(load)
 </script>
 
 <template>
-  <header class="topbar">
-    <nav class="topbar-inner" aria-label="任务导航">
-      <RouterLink :to="{ name: 'outpatient' }">返回门诊驾驶舱</RouterLink>
-      <RouterLink :to="{ name: 'ops-sources' }">数据源管理</RouterLink>
-    </nav>
-  </header>
-  <main class="workspace">
-    <section class="page-heading"><div><h1>任务管理</h1><p class="lead">查看最近运行的阶段、记录数和耗时。</p></div></section>
+  <main class="workspace section-page">
+    <WorkspaceHeading>
+      <h1>任务管理</h1>
+      <template #tools>
+        <RouterLink class="button secondary section-link" :to="{ name: 'ops-sources' }">数据源管理</RouterLink>
+      </template>
+    </WorkspaceHeading>
     <section class="panel filter-panel">
       <div class="section-heading ops-heading">
         <h2>任务状态</h2>
@@ -90,7 +90,13 @@ onMounted(load)
           <tbody>
             <tr v-for="item in items" :key="item.name">
               <th scope="row">{{ names[item.name] }}</th>
-              <td>{{ item.latest ? labels[item.latest.status] : '暂无近期记录' }}</td>
+              <td>
+                <span v-if="item.latest" class="status-chip"
+                  :class="{ 'status-chip-attention': ['FAILED', 'BLOCKED', 'PARTIAL'].includes(item.latest.status) }">
+                  {{ labels[item.latest.status] }}
+                </span>
+                <span v-else>暂无近期记录</span>
+              </td>
               <td>{{ item.latest ? format(item.latest.at) : '—' }}</td>
               <td>{{ item.latest?.rows ?? '—' }}</td>
               <td>{{ item.latest ? item.latest.cost_ms + ' ms' : '—' }}</td>

@@ -39,6 +39,56 @@ def test_rank_changes_uses_absolute_difference_and_stable_ties():
     assert rows[2]["null_reason"] == "ZERO_BASE"
 
 
+def test_operations_report_keeps_scoped_totals_and_skips_unconfirmed_shares():
+    from copy import deepcopy
+
+    from fastapi import HTTPException
+
+    from app.llm.report_gen import _operations_sections
+
+    report = {"sections": [
+        {"id": "overview", "data": {"outpatient_visits": 4}},
+        {"id": "trend", "data": [{"date": FEB, "visits": 4}]},
+        {"id": "department_comparison", "data": [{"dept_code": DEPT, "visits": 4}]},
+    ]}
+    data = {"activity": [{"date": FEB, "kind": "OUTPATIENT", "count": 4},
+                         {"date": FEB, "kind": "INPATIENT", "count": 2}],
+            "departments": [{"code": DEPT, "outpatient": 4, "inpatient": 2, "amount": "100.00"}],
+            "daily_charges": [{"date": FEB, "amount": "100.00"}], "charge_total": "100.00",
+            "admissions": 3, "avg_stay_days": "6.5", "charges": [],
+            "fee_types": [{"name": "DRUG", "value": "25"}, {"name": "CONSUMABLE", "value": "5"},
+                          {"name": "OTHER", "value": "70"}]}
+    overview, trend, ranking = [section["data"] for section in _operations_sections(deepcopy(report), data)["sections"]]
+    assert (overview["admissions"], overview["discharges"], overview["drug_share"], overview["consumable_share"]) == (3, 2, "25.00", "5.00")
+    assert trend[0]["discharges"] == 2 and ranking[0]["charge_amount"] == "100.00"
+    data["fee_types"][0]["value"] = None
+    assert "drug_share" not in _operations_sections(deepcopy(report), data)["sections"][0]["data"]
+    data["departments"][0]["outpatient"] = 5
+    with pytest.raises(HTTPException) as mismatch:
+        _operations_sections(deepcopy(report), data)
+    assert mismatch.value.status_code == 503
+
+
+def test_operations_report_reads_comparison_and_summary_together(monkeypatch):
+    from datetime import date
+
+    from app.llm import report_gen
+
+    operations = {"admissions": 3}
+    calls = []
+
+    def read(query, user, *, operations_start=None):
+        calls.append((query.start_date, query.end_date, query.dept_code, operations_start))
+        return DEPT, {"counts": [], "operations": operations,
+                      "meta": {"source": "ads_outpatient_theme", "batch_date": "2025-06-30", "build_run_id": "run"}}, None
+
+    monkeypatch.setattr(report_gen, "query_indicator", read)
+    _, _, _, _, summary = report_gen._read_comparison("monthly", date(2025, 6, 1), date(2025, 6, 30), object(), DEPT,
+                                                        operations=True)
+    assert calls == [("2025-05-01", "2025-06-30", DEPT, "2025-06-01")]
+    assert summary is operations
+
+
 def test_handbook_answers_are_versioned_and_fail_closed(tmp_path, monkeypatch):
     from fastapi import HTTPException
 

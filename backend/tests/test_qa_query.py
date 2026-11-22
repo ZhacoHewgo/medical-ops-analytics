@@ -323,6 +323,30 @@ def test_mart_readers_are_limited_to_the_served_whitelist(monkeypatch):
     assert answer["chart_type"] == "number" and answer["unit"] == "%"
 
 
+def test_course_summary_questions_keep_department_authorization(monkeypatch):
+    from fastapi import HTTPException
+
+    from app.llm import nl2sql, readers
+    from etl.config.source_config import COURSE_DATASET
+
+    monkeypatch.setenv("OUTPATIENT_PREVIEW_DATASET_ID", COURSE_DATASET)
+    seen = []
+
+    def summary(code, first, last, scope):
+        seen.append((code, scope))
+        return {"source": "ads_inpatient_theme", "batch_date": "2025-06-30", "build_run_id": RUN_ID,
+                "points": [{"start_date": first.isoformat(), "end_date": last.isoformat(), "value": "34.26"}]}
+
+    monkeypatch.setattr(readers, "course_summary", summary)
+    user = _Account("department", "HN")
+    with pytest.raises(HTTPException) as denied:
+        nl2sql.run_nl_query("2025年5月全院床位使用率", user)
+    assert denied.value.status_code == 403 and not seen
+    result = nl2sql.run_nl_query("2025年5月本科室床位使用率", user)
+    assert result["points"][0]["value"] == "34.26"
+    assert seen == [("MOPS-INP-04", "HN")]
+
+
 def test_slow_mart_read_degrades_to_503(monkeypatch, sql_gateway):
     from fastapi import HTTPException
 
