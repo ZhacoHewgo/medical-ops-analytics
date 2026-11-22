@@ -17,7 +17,7 @@
 
 ## 计算步骤
 
-1. 从[团队仓库](https://github.com/ZhacoHewgo/medical-ops-analytics/blob/b289c523052b66e7e150df20133989d7cba34b0f/data/files/finance_excel.csv)取得 `data/files/finance_excel.csv`，用二进制原文件计算 SHA-256，结果与仓库的 `docs/platform-data-inventory.json` 一致。SHA-256 为 `ddcab4e7dc4983ebc7a42dcb6651efae098fffc69a7d4d999cb2f32923cd714f`。
+1. 从[仓库](https://github.com/ZhacoHewgo/medical-ops-analytics/blob/b289c523052b66e7e150df20133989d7cba34b0f/data/files/finance_excel.csv)取得 `data/files/finance_excel.csv`，用二进制原文件计算 SHA-256，结果与仓库的 `docs/platform-data-inventory.json` 一致。SHA-256 为 `ddcab4e7dc4983ebc7a42dcb6651efae098fffc69a7d4d999cb2f32923cd714f`。
 2. 保留全部来源记录。按 `stat_date, dept_code` 分组，对三列分别执行 SUM，对行数执行 COUNT(*)。SQL 路径将金额乘 100 转为整数并确认无精度损失，汇总完成后除以 100 恢复源单位。
 3. 独立用 Decimal 逐组加总，与 SQLite 的整数金额结果比较，910 组逐列一致。将日汇总写入 CSV 后重新打开，核对来源行数及三列总额。上表月度小计由该 CSV 按月份汇总而得。
 
