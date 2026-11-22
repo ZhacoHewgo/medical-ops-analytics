@@ -45,17 +45,19 @@ def create_app() -> FastAPI:
     from app.api.routers.disease_router import router as disease_router
     from app.api.routers.inpatient_router import router as inpatient_router
     from app.api.routers.llm_router import router as llm_router
+    from app.api.routers.multidimensional_router import router as multidimensional_router
     from app.api.routers.operations_router import router as operations_router
     from app.api.routers.outpatient_router import router as outpatient_router
     from app.api.routers.quality_router import router as quality_router
     from app.api.routers.resource_router import router as resource_router
     from app.api.routers.revenue_router import router as revenue_router
+    from app.api.routers.overview_router import router as overview_router
     from app.api.routers.task_router import router as task_router
 
     dependencies = [] if auth_enabled else [Depends(auth_routes_disabled)]
     for router in (
         auth_router, operations_router, task_router, quality_router, outpatient_router,
-        inpatient_router, revenue_router, disease_router, resource_router, llm_router,
+        inpatient_router, revenue_router, disease_router, resource_router, overview_router, llm_router, multidimensional_router,
     ):
         application.include_router(router, dependencies=dependencies)
     return application

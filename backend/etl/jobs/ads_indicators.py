@@ -8,9 +8,10 @@ from numbers import Real
 
 import pandas as pd
 
-from etl.config.source_config import OdsError, connect_database
+from etl.config.source_config import COURSE_DATASET, OdsError, connect_database
 from etl.jobs import aggregate_themes as themes, build_dwd as build, clean_dwd as clean
 from etl.jobs.aggregate_dws import _day, _department, _report, _scope
+from etl.jobs import course_indicators as course
 from etl.jobs.quality_check import PRIVACY_KEY_ERRORS
 from etl.scheduler import scheduler
 
@@ -59,6 +60,7 @@ SAFE_ERRORS = {
     "N10_DATE_INVALID", "N10_RANGE_INVALID", "N10_GRANULARITY_INVALID", "N10_METRIC_INVALID",
     "N10_DEPARTMENT_INVALID", "N10_THEME_INVALID", "N10_DRILL_INVALID", "N10_BATCH_INVALID",
     "N10_DATASET_INVALID", "N10_ENV_INVALID",
+    "N10_REPORT_TOO_LARGE",
 }
 
 
@@ -178,7 +180,14 @@ def summarize_inpatient(start, end, department, *, dataset_id, batch_date, build
                 calculation=partial(_calculate_inpatient_summary, department=department, build_run_id=build_run_id))
 
 
-def summarize_theme(theme, start, end, department, *, dataset_id, batch_date, build_run_id, env="dev", drill=None):
+def summarize_overview(start, end, department, *, dataset_id, batch_date, build_run_id, env="dev"):
+    department = _department(department, "N10_DEPARTMENT_INVALID")
+    return _run(start, end, "day", dataset_id, batch_date, env, write=False, open_dates=True,
+                calculation=partial(_calculate_overview, department=department, build_run_id=build_run_id))
+
+
+def summarize_theme(theme, start, end, department, *, dataset_id, batch_date, build_run_id, env="dev", drill=None,
+                    include_income_totals=False):
     if drill not in (None, "department"):
         raise OdsError("N10_DRILL_INVALID")
     try:
@@ -189,7 +198,7 @@ def summarize_theme(theme, start, end, department, *, dataset_id, batch_date, bu
         raise OdsError("N10_THEME_INVALID")
     department = _department(department, "N10_DEPARTMENT_INVALID")
     calculation = partial(_calculate_theme_summary, theme=theme, department=department,
-                          build_run_id=build_run_id, drill=drill)
+                          build_run_id=build_run_id, drill=drill, include_income_totals=include_income_totals)
     return _run(start, end, "day", dataset_id, batch_date, env, write=False, open_dates=True,
                 calculation=calculation)
 
@@ -199,7 +208,7 @@ def run_indicators(start_date, end_date, granularity, *, dataset_id=None, batch_
         metrics = (metrics,)
     if not isinstance(metrics, (tuple, list)):
         raise OdsError("N10_ARGUMENTS_INVALID")
-    if any(not isinstance(code, str) or code not in THEME_METRICS for code in metrics):
+    if any(not isinstance(code, str) or code not in THEME_METRICS and code not in course.CODE_INFO for code in metrics):
         raise OdsError("N10_METRIC_INVALID")
     if len(metrics) != len(set(metrics)):
         raise OdsError("N10_METRIC_INVALID")
@@ -288,6 +297,9 @@ def _run(start, end, grain, dataset_id, batch_date, env, *, write, calculation=N
     else:
         span = _range(start, end, grain)
     batch = _scope(dataset_id, batch_date, env, "N10")
+    if open_dates:
+        return _transaction(span, grain, dataset_id, batch, env, write=False,
+                            calculation=calculation, read_snapshot=True)
     try:
         with scheduler._lock(env, "run"):
             return _transaction(span, grain, dataset_id, batch, env, write=write, calculation=calculation)
@@ -295,13 +307,14 @@ def _run(start, end, grain, dataset_id, batch_date, env, *, write, calculation=N
         raise OdsError("N10_RUN_LOCKED") from None
 
 
-def _transaction(span, grain, dataset_id, batch_date, env, *, write, calculation=None):
+def _transaction(span, grain, dataset_id, batch_date, env, *, write, calculation=None, read_snapshot=False):
     connection = connect_database()
     try:
         try:
             with connection.cursor() as cursor:
                 cursor.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
-                cursor.execute("START TRANSACTION")
+                cursor.execute("START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY" if read_snapshot else
+                               "START TRANSACTION")
                 result = (calculation or _calculate)(cursor, span, grain, dataset_id, batch_date, env, write=write)
         except Exception as error:
             try:
@@ -322,9 +335,12 @@ def _transaction(span, grain, dataset_id, batch_date, env, *, write, calculation
         clean._close(connection)
 
 
-def _source(cursor, dataset_id, batch_date, env):
+def _source(cursor, dataset_id, batch_date, env, *, read_snapshot=False):
     try:
-        dataset, batch, _ = build._lock_inputs(cursor, dataset_id)
+        if read_snapshot:
+            dataset, batch, _ = clean._registry(cursor, dataset_id)
+        else:
+            dataset, batch, _ = build._lock_inputs(cursor, dataset_id)
         report = _report(env, batch)
         identity = build.verify_build_freshness_from_cursor(
             cursor, dataset_id=dataset, batch_date=batch, env=env, report=report,
@@ -389,6 +405,11 @@ def _periods(first, last, grain):
 
 def _calculate(cursor, span, grain, dataset_id, batch_date, env, *, write, metrics=()):
     dataset, batch, report, run = _source(cursor, dataset_id, batch_date, env)
+    if write and dataset == COURSE_DATASET and not metrics:
+        metrics = (*THEME_METRICS, *course.CODE_INFO)
+    extra = tuple(code for code in metrics if code in course.CODE_INFO)
+    if extra and dataset != COURSE_DATASET:
+        raise OdsError("N10_METRIC_INVALID")
     low, high = (date.fromisoformat(report[key]) for key in ("effective_start", "effective_end"))
     first, last = span
     allowed = (low, high) if grain == "day" else (low.replace(day=1), _month_end(high))
@@ -435,8 +456,12 @@ def _calculate(cursor, span, grain, dataset_id, batch_date, env, *, write, metri
                     numerator = denominator = None
                 append(GROWTH, period, dept, "%", numerator, denominator, ratio, reason)
 
-    if metrics:
-        rows.extend(_theme_rows(cursor, span, grain, dataset, batch, run, low, high, scopes, metrics))
+    core = tuple(code for code in metrics if code in THEME_METRICS)
+    if core:
+        rows.extend(_theme_rows(cursor, span, grain, dataset, batch, run, low, high, scopes, core))
+    if extra:
+        periods = tuple((day, day if grain == "day" else _month_end(day)) for day in _periods(first, last, grain))
+        rows.extend(course.rows(cursor, dataset, batch, run, grain, periods, scopes, extra, low, high))
     rows.sort(key=lambda row: row[1:5])
     if write:
         codes = (VOLUME, GROWTH, *metrics)
@@ -548,8 +573,8 @@ def _theme_rows(cursor, span, grain, dataset, batch, run, low, high, scopes, met
     return rows
 
 
-def _summary_rows(cursor, span, grain, dataset_id, batch_date, env, *, theme, department, build_run_id):
-    dataset, batch, report, run = _source(cursor, dataset_id, batch_date, env)
+def _summary_scope(cursor, span, grain, dataset_id, batch_date, env, *, department, build_run_id, source):
+    dataset, batch, report, run = _source(cursor, dataset_id, batch_date, env, read_snapshot=True)
     if run != build_run_id:
         raise OdsError("N10_SOURCE_STALE")
     low, high = report["effective_start"], report["effective_end"]
@@ -562,31 +587,79 @@ def _summary_rows(cursor, span, grain, dataset_id, batch_date, env, *, theme, de
         cursor.execute("SELECT 1 FROM dim_department WHERE dataset_id=%s AND dept_code=%s", (dataset, department))
         if cursor.fetchone() is None:
             raise OdsError("N10_DEPARTMENT_UNKNOWN")
-    source = _read_theme(cursor, theme, dataset, batch, run, first, last)
-    rows = source if department is None else [row for row in source if row["dept_code"] == department]
-    if _report(env, batch.isoformat()) != report:
-        raise OdsError("N10_SOURCE_STALE")
-    return rows, {
+    context = {
         "filters": {"start_date": start, "end_date": end, "dept_code": department},
-        "meta": {"source": themes.TABLES[theme], "batch_date": batch.isoformat(), "build_run_id": run,
+        "meta": {"source": source, "batch_date": batch.isoformat(), "build_run_id": run,
                  "available_start_date": low, "available_end_date": high},
     }
+    return dataset, batch, report, first, last, context
+
+
+def _summary_rows(cursor, span, grain, dataset_id, batch_date, env, *, theme, department, build_run_id,
+                  include_income_totals=False):
+    from etl.jobs import dashboard_details
+
+    dataset, batch, report, first, last, context = _summary_scope(
+        cursor, span, grain, dataset_id, batch_date, env, department=department,
+        build_run_id=build_run_id, source=themes.TABLES[theme],
+    )
+    source = _read_theme(cursor, theme, dataset, batch, build_run_id, first, last)
+    rows = source if department is None else [row for row in source if row["dept_code"] == department]
+    context["details"] = dashboard_details.details(cursor, theme, dataset, first, last, department)
+    if theme == "drg" and dataset == COURSE_DATASET:
+        low, high = (date.fromisoformat(report[key]) for key in ("effective_start", "effective_end"))
+        context["details"]["disease_estimates"] = course.disease_estimates(cursor, dataset, first, last, department, low, high)
+    if theme == "efficiency" and dataset == COURSE_DATASET:
+        context["bed_metrics"], context["department_beds"], _ = course.resource_bed_metrics(
+            cursor, dataset, first, last, department,
+        )
+    if theme == "inpatient":
+        context["admissions"] = dashboard_details.admissions(cursor, dataset, first, last, department)
+        if dataset == COURSE_DATASET:
+            beds, _, _ = course.resource_bed_metrics(cursor, dataset, first, last, department)
+            context["bed_usage_rate"] = beds["bed_usage_rate"]
+    if theme == "income" and include_income_totals:
+        from etl.jobs.multidimensional_report import income_totals
+
+        context["details"]["income_totals"] = income_totals(cursor, dataset, batch, first, last, department)
+        context["details"]["visit_costs"] = dashboard_details.visit_costs(cursor, dataset, first, last, department)
+    if _report(env, batch.isoformat()) != report:
+        raise OdsError("N10_SOURCE_STALE")
+    return rows, context
+
+
+def _calculate_overview(cursor, span, grain, dataset_id, batch_date, env, *, write, department, build_run_id):
+    from etl.jobs import dashboard_details
+
+    dataset, batch, report, first, last, context = _summary_scope(
+        cursor, span, grain, dataset_id, batch_date, env, department=department,
+        build_run_id=build_run_id, source="dwd_visit_detail",
+    )
+    result = dashboard_details.overview(cursor, dataset, first, last, department)
+    if dataset == COURSE_DATASET:
+        beds, _, trend = course.resource_bed_metrics(cursor, dataset, first, last, department, include_trend=True)
+        result.update(bed_usage_rate=beds["bed_usage_rate"], bed_trend=trend)
+    if _report(env, batch.isoformat()) != report:
+        raise OdsError("N10_SOURCE_STALE")
+    return {**context, **result}
 
 
 def _calculate_inpatient_summary(cursor, span, grain, dataset_id, batch_date, env, *, write, department, build_run_id):
     rows, context = _summary_rows(cursor, span, grain, dataset_id, batch_date, env,
                                   theme="inpatient", department=department, build_run_id=build_run_id)
-    daily = Counter()
+    daily = {}
     for row in rows:
-        daily[row["stat_date"]] += row["discharges"]
+        daily.setdefault(row["stat_date"], []).append(row)
     result = {}
     for name, metric in (("avg_stay_days", STAY), ("avg_cost", COST)):
         _, _, value, reason = _ratio(metric, rows)
         result[name] = {"value": None if value is None else format(value, "f"), "null_reason": reason}
-    return {
-        **context, **result, "discharges": sum(daily.values()),
-        "daily_trend": [{"date": day.isoformat(), "discharges": value} for day, value in sorted(daily.items())],
-    }
+    trend = []
+    for day, items in sorted(daily.items()):
+        _, cases, stay, _ = _ratio(STAY, items)
+        trend.append({"date": day.isoformat(), "discharges": cases,
+                      "avg_stay_days": format(stay, "f") if stay is not None else None})
+    return {**context, **result, "discharges": sum(row["discharges"] for row in trend), "daily_trend": trend}
 
 
 def _theme_total(rows, key):
@@ -598,12 +671,21 @@ def _theme_total(rows, key):
 
 
 def _calculate_theme_summary(cursor, span, grain, dataset_id, batch_date, env, *, write, theme, department,
-                             build_run_id, drill):
+                             build_run_id, drill, include_income_totals=False):
     rows, context = _summary_rows(cursor, span, grain, dataset_id, batch_date, env,
-                                  theme=theme, department=department, build_run_id=build_run_id)
+                                  theme=theme, department=department, build_run_id=build_run_id,
+                                  include_income_totals=include_income_totals)
     available, missing = THEME_SUMMARIES[theme]
     metrics = {key: _theme_total(rows, key) for key in available}
     metrics.update({key: {"value": None, "null_reason": reason} for key, reason in missing.items()})
+    metrics.update(context.pop("bed_metrics", {}))
+    if "department_beds" in context:
+        discharges = Counter()
+        for row in rows:
+            discharges[row["dept_code"]] += row["discharges"]
+        for code, item in context["department_beds"].items():
+            beds = item["bed_count"]
+            item["bed_turnover"] = format(_decimal_ratio(discharges[code], beds), "f") if beds else None
     by_group = {}
     for row in rows:
         group = row["dept_code"] if drill == "department" else row["stat_date"].isoformat()

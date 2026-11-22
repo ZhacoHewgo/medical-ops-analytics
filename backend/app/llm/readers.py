@@ -164,6 +164,33 @@ def income(first, last, scope, user, *, series):
     return observation
 
 
+def course_summary(metric, first, last, scope):
+    from etl.jobs.ads_indicators import summarize_inpatient, summarize_theme
+
+    args = (first.isoformat(), last.isoformat(), scope)
+    arguments = _theme_arguments()
+    if metric == "MOPS-INP-04":
+        data = _theme_call(summarize_inpatient, *args, **arguments)
+        item = data.get("bed_usage_rate") or {"value": None, "null_reason": "BED_CAPACITY_MISSING"}
+    elif metric == "MOPS-DRUG-02":
+        data = _theme_call(summarize_theme, "income", *args, **arguments)
+        amount = data["metrics"]["charge_amount"]["value"]
+        fees = data["details"]["fee_types"]
+        if amount is None or any(row["value"] is None or Decimal(row["value"]) < 0 for row in fees):
+            item = {"value": None, "null_reason": "INCOMPLETE_INPUT"}
+        elif Decimal(amount) <= 0 or not fees:
+            item = {"value": None, "null_reason": "ZERO_BASE"}
+        else:
+            drug = sum(Decimal(row["value"]) for row in fees if row["name"] == "DRUG")
+            item = {"value": drug * 100 / Decimal(amount), "null_reason": None}
+    else:
+        raise ValueError("unsupported course summary")
+    meta = data["meta"]
+    return {"source": meta["source"], "batch_date": meta["batch_date"], "build_run_id": meta["build_run_id"],
+            "null_reason": item["null_reason"], "points": [{"start_date": args[0], "end_date": args[1],
+                                                           "value": _places(item["value"], 2)}]}
+
+
 READERS = {
     "MOPS-OUT-01": lambda first, last, scope, user, series: outpatient("MOPS-OUT-01", first, last, scope, user,
                                                                         series=series),

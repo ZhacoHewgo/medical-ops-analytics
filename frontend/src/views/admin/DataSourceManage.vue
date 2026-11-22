@@ -1,4 +1,5 @@
 <script setup>
+import WorkspaceHeading from '../../components/WorkspaceHeading.vue'
 import { computed, onMounted, ref, shallowRef } from 'vue'
 import { useManagementRequest } from '../../api/admin.mjs'
 import { useSession } from '../../api/session.mjs'
@@ -59,14 +60,13 @@ onMounted(load)
 </script>
 
 <template>
-  <header class="topbar">
-    <nav class="topbar-inner" aria-label="数据源导航">
-      <RouterLink :to="{ name: 'outpatient' }">返回门诊驾驶舱</RouterLink>
-      <RouterLink :to="{ name: 'ops-tasks' }">任务管理</RouterLink>
-    </nav>
-  </header>
-  <main class="workspace">
-    <section class="page-heading"><div><h1>数据源管理</h1><p class="lead">查看已登记的文件批次和最近检查结果。</p></div></section>
+  <main class="workspace section-page">
+    <WorkspaceHeading>
+      <h1>数据源管理</h1>
+      <template #tools>
+        <RouterLink class="button secondary section-link" :to="{ name: 'ops-tasks' }">任务管理</RouterLink>
+      </template>
+    </WorkspaceHeading>
     <section class="panel filter-panel">
       <div class="section-heading">
         <h2>登记状态</h2>
@@ -82,13 +82,17 @@ onMounted(load)
       <p v-if="loading" role="status" aria-busy="true">正在读取数据源…</p>
       <div v-else-if="items.length" class="table-scroll" tabindex="0" aria-label="数据源列表，可滚动查看">
         <table>
-          <thead><tr><th scope="col">数据源</th><th scope="col">登记</th><th scope="col">数据集</th><th scope="col">批次</th><th scope="col">最近检查</th><th v-if="canCheck" scope="col">操作</th></tr></thead>
+          <thead><tr><th scope="col">数据源</th><th scope="col">登记</th><th scope="col">源文件</th><th scope="col">批次</th><th scope="col">最近检查</th><th v-if="canCheck" scope="col">操作</th></tr></thead>
           <tbody>
             <tr v-for="item in items" :key="item.name">
               <th scope="row">{{ names[item.name] }}</th>
-              <td>{{ item.registered ? '已登记' : '未登记' }}</td>
-              <td>{{ item.dataset_id || '—' }}</td><td>{{ item.batch_date || '—' }}</td>
-              <td v-if="item.last_check">{{ item.last_check.outcome === 'SUCCESS' ? '通过' : '失败' }} · {{ format(item.last_check.at) }}</td><td v-else>暂无检查记录</td>
+              <td><span class="status-chip" :class="{ 'status-chip-attention': !item.registered }">{{ item.registered ? '已登记' : '未登记' }}</span></td>
+              <td>{{ item.registered && Object.hasOwn(names, item.name) ? item.name + '.csv' : '—' }}</td><td>{{ item.batch_date || '—' }}</td>
+              <td v-if="item.last_check">
+                <span class="status-chip" :class="{ 'status-chip-attention': item.last_check.outcome !== 'SUCCESS' }">{{ item.last_check.outcome === 'SUCCESS' ? '通过' : '失败' }}</span>
+                <time :datetime="item.last_check.at"> {{ format(item.last_check.at) }}</time>
+              </td>
+              <td v-else>暂无检查记录</td>
               <td v-if="canCheck"><button v-if="item.registered" class="button secondary" type="button" :disabled="checking || Boolean(selected)" @click="selected = item.name">检查文件</button><span v-else>—</span></td>
             </tr>
           </tbody>

@@ -2,7 +2,6 @@
 /* global document, innerWidth */
 import assert from 'node:assert/strict'
 import { mkdir } from 'node:fs/promises'
-import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 const { chromium } = await import(pathToFileURL(process.env.MOPS_PLAYWRIGHT_CORE).href)
@@ -15,66 +14,43 @@ const browser = await chromium.launch({
 })
 
 try {
-  const page = await browser.newPage({ viewport: { width: 1280, height: 900 }, locale: 'zh-CN' })
+  const page = await browser.newPage({ viewport: { width: 390, height: 844 }, locale: 'zh-CN' })
   const errors = []
+  const legacyBrowserRequests = []
   page.on('pageerror', error => errors.push(error.message))
+  page.on('request', request => {
+    if (new URL(request.url()).pathname.startsWith('/api/dashboard/')) legacyBrowserRequests.push(request.url())
+  })
 
-  const counts = async () => {
-    const kpi = page.locator('.kpi-value')
-    await kpi.waitFor({ state: 'visible' })
-    return Number((await kpi.innerText()).replace(/[^0-9]/g, ''))
-  }
-  const apply = async () => {
-    const response = page.waitForResponse(r => r.url().includes('/api/dashboard/outpatient-preview'))
-    await page.getByRole('button', { name: '应用筛选' }).click()
-    assert.equal((await response).status(), 200)
-  }
-
-  const fullResponse = page.waitForResponse(r => r.url().endsWith('/api/dashboard/outpatient-preview'))
   await page.goto(base + '/?source=preview', { waitUntil: 'domcontentloaded' })
-  const full = await (await fullResponse).json()
-  assert.equal(full.data.outpatient_visits, 4)
-  assert.equal(await counts(), 4)
-  await page.getByText(full.data.meta.build_run_id, { exact: true }).waitFor()
-  await page.getByText('dwd_visit_detail', { exact: true }).waitFor()
-  await page.screenshot({ path: join(resultDir, 'outpatient-preview.png'), fullPage: true })
+  await page.waitForURL(url => url.pathname === '/login' && url.searchParams.get('redirect') === '/overview')
+  await page.getByRole('heading', { name: '登录', exact: true }).waitFor()
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth))
+  assert.deepEqual(legacyBrowserRequests, [])
 
-  await page.getByLabel('科室代码').selectOption('CARD')
-  await apply()
-  assert.equal(await counts(), 3)
-  await page.getByLabel('科室代码').selectOption('RESP')
-  await page.getByLabel('结束日期').fill('2026-01-01')
-  await apply()
-  assert.equal(await counts(), 0)
-  await page.getByRole('heading', { name: '当前范围暂无有效门诊记录' }).waitFor()
+  async function getPreview(status, filters = {}) {
+    const response = await page.request.get(base + '/api/dashboard/outpatient-preview', { params: filters })
+    assert.equal(response.status(), status)
+    return (await response.json()).data
+  }
 
-  await page.getByLabel('结束日期').fill('2026-01-05')
-  const rejected = page.waitForResponse(r => r.url().includes('/api/dashboard/outpatient-preview'))
-  await page.getByRole('button', { name: '应用筛选' }).click()
-  assert.equal((await rejected).status(), 422)
-  await page.getByRole('alert').getByText(/HTTP 422/).waitFor()
-  assert.equal(await page.locator('.kpi-value').count(), 0)
+  const full = await getPreview(200)
+  assert.equal(full.outpatient_visits, 4)
+  assert.ok(full.meta.build_run_id)
+  assert.equal((await getPreview(200, { dept_code: 'CARD' })).outpatient_visits, 3)
+  assert.equal((await getPreview(200, { dept_code: 'RESP', start_date: '2026-01-01', end_date: '2026-01-01' })).outpatient_visits, 0)
+  await getPreview(422, { start_date: '2026-01-01', end_date: '2026-01-05' })
 
-  // The fixture rejects this request in the API using the same unavailable-source error path.
-  await page.request.post(base + '/__rehearsal/source/unavailable')
-  await page.getByRole('button', { name: '重置' }).click()
-  await page.getByRole('alert').getByText(/HTTP 503/).waitFor()
-  assert.equal(await page.locator('.kpi-value').count(), 0)
-  await page.request.post(base + '/__rehearsal/source/available')
-  await page.getByRole('button', { name: '重试本次请求' }).click()
-  assert.equal(await counts(), 4)
+  assert.ok((await page.request.post(base + '/__rehearsal/source/unavailable')).ok())
+  await getPreview(503)
+  assert.ok((await page.request.post(base + '/__rehearsal/source/available')).ok())
+  assert.equal((await getPreview(200)).outpatient_visits, 4)
 
-  await page.setViewportSize({ width: 390, height: 844 })
-  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false)
-  await page.screenshot({ path: join(resultDir, 'outpatient-preview-mobile.png'), fullPage: true })
-
-  const csvResponse = page.waitForResponse(r => r.url().endsWith('/api/dashboard/overview'))
-  await page.getByRole('link', { name: '返回 CSV 看板' }).click()
-  assert.equal((await csvResponse).status(), 200)
-  assert.equal(await counts(), 4)
-  await page.getByRole('heading', { name: '数据质量摘要' }).waitFor()
+  const csv = await page.request.get(base + '/api/dashboard/overview')
+  assert.ok(csv.ok())
+  assert.equal((await csv.json()).data.outpatient_visits, 4)
   assert.deepEqual(errors, [])
-  console.log(JSON.stringify({ all: 4, department: 3, empty: 0, outOfCoverage: 422, unavailable: 503,
+  console.log(JSON.stringify({ legacyRedirect: true, all: 4, department: 3, empty: 0, outOfCoverage: 422, unavailable: 503,
     recovery: 4, mobileWidth: 390, csv: 4, pageErrors: errors.length }))
 } finally {
   await browser.close()

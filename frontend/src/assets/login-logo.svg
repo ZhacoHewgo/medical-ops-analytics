@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 44 44">
+  <defs>
+    <clipPath id="tile">
+      <rect x="1" y="1" width="42" height="42" rx="10" />
+    </clipPath>
+    <linearGradient id="blue" x2="0" y2="1" gradientUnits="objectBoundingBox">
+      <stop stop-color="#497cff" />
+      <stop offset="1" stop-color="#285bf2" />
+    </linearGradient>
+    <linearGradient id="wave" x2="1" y2="1" gradientUnits="objectBoundingBox">
+      <stop stop-color="#81a7ff" />
+      <stop offset="1" stop-color="#497cf3" />
+    </linearGradient>
+    <linearGradient id="deep" x2="0" y2="1" gradientUnits="objectBoundingBox">
+      <stop stop-color="#285be8" />
+      <stop offset="1" stop-color="#233fe0" />
+    </linearGradient>
+  </defs>
+  <g clip-path="url(#tile)">
+    <rect width="44" height="44" fill="url(#blue)" />
+    <path d="M0 27c5-3 9-4 16.7-4.8 1.4-3.5 3.5-5.6 6.7-5.6 3 0 4.9.9 6.5 2.2h6.5C32.9 13.5 28.1 9.8 22.5 9.8c-6.1 0-10.3 4-13.1 9.5C6.5 20 3.8 21 0 22.5Z" fill="#f6f8ff" />
+    <path d="M0 44V26.6c7.3-4.1 11-3.1 16.7-4.4 7.4-1.9 11.9 1.8 19.7-1.5 2.5-1 5-2.2 7.6-2.8V44Z" fill="url(#wave)" />
+    <path d="M0 44v-6.8c7.1-6.2 11.3-8.4 16.5-8.8 7.9-.7 11 3 17.8.5 3.1-1.1 6.3-3 9.7-3.6V44Z" fill="url(#deep)" />
+  </g>
+</svg>

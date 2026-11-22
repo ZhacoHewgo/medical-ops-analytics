@@ -8,12 +8,17 @@ defineProps({
   drillable: Boolean,
   label: String,
   unit: String,
+  period: String,
+  highlightDate: String,
+  previousRows: Array,
 })
 defineEmits(['select-row'])
 </script>
 
 <template>
   <div :aria-busy="loading">
-    <DashboardChart kind="trend" :rows="data" :theme="theme" :label="label" :unit="unit" :drillable="drillable" @select-row="$emit('select-row', $event)" />
+    <DashboardChart kind="trend" :rows="data" :theme="theme" :label="label" :unit="unit" :period="period"
+      :drillable="drillable" :highlight-date="highlightDate" :previous-rows="previousRows"
+      @select-row="$emit('select-row', $event)" />
   </div>
 </template>

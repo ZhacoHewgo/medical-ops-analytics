@@ -1,4 +1,18 @@
 import { buildQuery, validateDashboard } from './dashboard.mjs'
+import { outpatientDepartmentName } from './departmentLabels.mjs'
+
+export const multidimensionalEndpoint = '/api/v1/reports/multidimensional'
+export const defaultMultidimensional = {
+  group_by: 'date_department', grain: 'month', metrics: ['billing_income', 'charge_amount', 'ledger_income'],
+}
+
+export function multidimensionalPath(filters = defaultMultidimensional) {
+  const params = new URLSearchParams(buildQuery(filters))
+  params.set('group_by', filters.group_by)
+  params.set('grain', filters.grain)
+  for (const metric of filters.metrics) params.append('metrics', metric)
+  return `${multidimensionalEndpoint}?${params}`
+}
 
 export const reportGroups = {
   day: { label: '按日', time: '日期', department: false },
@@ -62,6 +76,107 @@ function monthRange(year, month) {
   date.setUTCFullYear(year, month, 0)
   const end = date.toISOString().slice(0, 10)
   return { start_date: end.slice(0, 7) + '-01', end_date: end }
+}
+
+export function reportDateChoices(start, end) {
+  if (!start || !end) throw new ReportError()
+  buildQuery({ start_date: start, end_date: end })
+  const days = []
+  const months = []
+  const from = Date.parse(start)
+  const through = Date.parse(end)
+  for (let time = from; time <= through; time += 86400000) {
+    const day = new Date(time).toISOString().slice(0, 10)
+    days.push(day)
+    const month = day.slice(0, 7)
+    if (months.at(-1)?.month !== month) months.push({ month, start_date: day, end_date: day })
+    else months.at(-1).end_date = day
+  }
+  return { days, months }
+}
+
+export function reportNarrative({ overview, trend, ranking, anomaly }) {
+  const count = value => value.toLocaleString('zh-CN', { maximumFractionDigits: 2 })
+  const change = value => `${value < 0 ? '减少' : '增加'} ${count(Math.abs(value))} 人次`
+  const visits = overview.outpatient_visits
+  let summary = `本期门诊就诊 ${count(visits)} 人次`
+  if (Number.isSafeInteger(overview.previous_visits)) {
+    const difference = visits - overview.previous_visits
+    summary += difference ? `，较上期${change(difference)}` : '，与上期持平'
+    if (difference && overview.change_pct !== null && Number.isFinite(Number(overview.change_pct))) {
+      summary += `（${count(Math.abs(Number(overview.change_pct)))}%）`
+    }
+    summary += `。上期门诊就诊 ${count(overview.previous_visits)} 人次`
+  }
+  const operations = overview.admissions !== undefined
+  const amount = value => Number(value).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+  const supplemental = [
+    ['admissions', '入院', '人次'], ['discharges', '出院', '人次'], ['avg_stay_days', '平均住院日', '天'],
+    ['charge_amount', '收费合计', '元'], ['outpatient_charge', '门诊收费', '元'], ['inpatient_charge', '住院收费', '元'],
+    ['drug_share', '药品费占比', '%'], ['consumable_share', '材料费占比', '%'],
+  ].filter(([key]) => overview[key] != null).map(([key, label, unit]) => {
+    const value = unit === '元' ? amount(overview[key]) : count(Number(overview[key]))
+    return `${label} ${value}${unit === '%' ? '%' : ' ' + unit}`
+  })
+  if (supplemental.length) summary += `。${supplemental.join('，')}`
+  const peak = trend.reduce((highest, row) => !highest || row.visits > highest.visits ? row : highest, null)
+  let trendText = '本期无门诊记录。'
+  if (peak?.visits) {
+    const mean = visits / trend.length
+    const minimum = Math.min(...trend.map(row => row.visits))
+    trendText = `日均门诊 ${count(mean)} 人次。单日最高为 ${peak.date} 的 ${count(peak.visits)} 人次。`
+    if (minimum < peak.visits) {
+      const aboveMean = trend.filter(row => row.visits > mean).length
+      trendText += `日门诊量在 ${count(minimum)} 至 ${count(peak.visits)} 人次之间，有 ${count(aboveMean)} 天高于本期日均。`
+    }
+  }
+  for (const [key, label, unit] of [['discharges', '出院人次', '人次'], ['charge_amount', '收费金额', '元']]) {
+    const highest = trend.reduce((best, row) => row[key] != null && (!best || Number(row[key]) > Number(best[key])) ? row : best, null)
+    if (highest && Number(highest[key]) > 0) {
+      const value = unit === '元' ? amount(highest[key]) : count(highest[key])
+      trendText += `单日${label}最高为 ${highest.date} 的 ${value} ${unit}。`
+    }
+  }
+  const departments = ranking.filter(row => row.visits > 0)
+  const topDepartments = departments.slice(0, 3)
+  let distribution = `本期 ${count(departments.length)} 个科室有门诊记录。${topDepartments
+    .map(row => `${outpatientDepartmentName(row.dept_code)} ${count(row.visits)} 人次`).join('，')}。`
+  if (visits > 0 && departments.length > 3) {
+    const total = topDepartments.reduce((sum, row) => sum + row.visits, 0)
+    distribution += `门诊量前三的科室合计 ${count(total)} 人次，占本期门诊量的 ${count(total * 100 / visits)}%。`
+  } else if (visits > 0 && departments.length > 1) {
+    const first = topDepartments[0]
+    distribution += `${outpatientDepartmentName(first.dept_code)}占本期门诊量的 ${count(first.visits * 100 / visits)}%。`
+  }
+  const largest = anomaly.top_changes[0]
+  return [
+    { id: 'overview', title: '总体概览', text: summary + '。' },
+    { id: 'trend', title: operations ? '运营趋势' : '门诊趋势', text: trendText },
+    ...(ranking.length ? [{ id: 'ranking', title: operations ? '科室对比' : '科室分布', text: departments.length ? distribution : '本期科室运营数据。' }] : []),
+    { id: 'anomaly', title: '科室波动', text: largest
+      ? `与上期相比，${outpatientDepartmentName(largest.dept_code)}的门诊量变动最大，${change(largest.difference)}。`
+        + `该科室上期为 ${count(largest.previous)} 人次，本期为 ${count(largest.current)} 人次。`
+      : anomaly.status === 'AVAILABLE' ? '科室门诊量与上期一致。' : '暂无可比上期。' },
+  ]
+}
+
+export function reportPeriod(type, value) {
+  const match = /^(\d{4})-(W?)(\d{2})$/.exec(value)
+  if (!match) return null
+  const year = Number(match[1])
+  const index = Number(match[3])
+  if (year < 1000 || index < 1) return null
+  if (type === 'monthly' && !match[2] && index <= 12) return monthRange(year, index)
+  if (type !== 'weekly' || !match[2] || index > 53) return null
+  const monday = new Date(0)
+  monday.setUTCFullYear(year, 0, 4)
+  monday.setUTCDate(4 - (monday.getUTCDay() + 6) % 7 + 7 * (index - 1))
+  const start = monday.toISOString().slice(0, 10)
+  monday.setUTCDate(monday.getUTCDate() + 3)
+  if (monday.getUTCFullYear() !== year) return null
+  monday.setUTCDate(monday.getUTCDate() + 3)
+  if (monday.getUTCFullYear() > 9999) return null
+  return { start_date: start, end_date: monday.toISOString().slice(0, 10) }
 }
 
 export function comparisonRange(filters, method) {

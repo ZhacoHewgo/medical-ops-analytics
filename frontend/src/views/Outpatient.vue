@@ -17,5 +17,5 @@ function loadData(path, options) {
 </script>
 
 <template>
-  <App authenticated endpoint="/api/v1/outpatient/summary" :load-response="loadData" />
+  <App :load-response="loadData" />
 </template>

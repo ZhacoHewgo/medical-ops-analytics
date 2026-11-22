@@ -9,7 +9,7 @@ from app.core.auth_store import (
     DB_DOWN, DEPARTMENT, USERNAME, Account, insert_user, list_users, log_action, log_admin_change,
     read_user, update_user,
 )
-from app.core.deps import require_role
+from app.core.deps import get_current_user, require_role
 from app.core.security import (
     create_access_token, dummy_hash, hash_account_password, store_unavailable, token_config, unauthorized,
     verify_password,
@@ -118,6 +118,12 @@ def login(body: LoginRequest, response: Response):
     return {"code": 0, "msg": "ok", "data": {
         "access_token": create_access_token(user), "token_type": "bearer", "user": user.public(),
     }}
+
+
+@router.get("/session", status_code=status.HTTP_204_NO_CONTENT, summary="核验当前会话",
+            responses={401: MANAGEMENT_ERRORS[401], 503: {"description": "账号服务不可用"}})
+def verify_session(_account: Annotated[Account, Depends(get_current_user)]):
+    return Response(status_code=status.HTTP_204_NO_CONTENT, headers={"Cache-Control": "no-store"})
 
 
 @router.post("/users", status_code=status.HTTP_201_CREATED, responses=MANAGEMENT_ERRORS,

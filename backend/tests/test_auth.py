@@ -138,6 +138,9 @@ def test_mysql_login_permissions_and_audit(auth_client):
         return response.json()["data"]["access_token"]
 
     admin = login(names["admin"])
+    verified = client.get("/api/auth/session", headers=auth_header(admin))
+    assert verified.status_code == 204 and verified.headers["Cache-Control"] == "no-store"
+    assert not verified.content
     claims = security.decode_token(admin)
     assert claims["user_id"] == admin_id and claims["role"] == "admin"
     assert claims["exp"] - claims["iat"] == 480 * 60

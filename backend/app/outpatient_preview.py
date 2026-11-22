@@ -4,7 +4,7 @@ import os
 from uuid import UUID
 
 from app.outpatient import strict_date
-from etl.config.source_config import OdsError, connect_database, database_options, validate_dataset
+from etl.config.source_config import COURSE_DATASET, OdsError, connect_database, database_options, validate_dataset
 
 
 def read_current_report(build, environment, batch):
@@ -62,19 +62,19 @@ def _read_ads_counts(cursor, dataset, batch, run_id, start, end, dept_code):
     return expected
 
 
-def load_ads(*, start_date=None, end_date=None, dept_code=None, allowed_department=None):
+def load_ads(*, start_date=None, end_date=None, dept_code=None, allowed_department=None, operations_start=None):
     if allowed_department is not None:
         if dept_code is not None and dept_code != allowed_department:
             raise OdsError("OUTPATIENT_ADS_SCOPE_INVALID")
         dept_code = allowed_department
     return _load_outpatient(start_date, end_date, dept_code, source="ads_outpatient_theme",
-                            allowed_department=allowed_department)
+                            allowed_department=allowed_department, operations_start=operations_start)
 
 
-def _load_outpatient(start_date, end_date, dept_code, *, source, allowed_department=None):
+def _load_outpatient(start_date, end_date, dept_code, *, source, allowed_department=None, operations_start=None):
     from pymysql import MySQLError
 
-    from etl.jobs import build_dwd as build
+    from etl.jobs import build_dwd as build, course_indicators, dashboard_details
     dataset = validate_dataset(os.environ.get("OUTPATIENT_PREVIEW_DATASET_ID", ""))
     batch = os.environ.get("OUTPATIENT_PREVIEW_BATCH_DATE", "")
     strict_date(batch)
@@ -122,9 +122,21 @@ def _load_outpatient(start_date, end_date, dept_code, *, source, allowed_departm
             start = first if start_date is None else start_date
             end = last if end_date is None else end_date
             counts = []
+            registrations = []
+            avg_cost = None
+            operations = None
             if first <= start <= end <= last and (dept_code is None or dept_code in departments):
                 if source == "ads_outpatient_theme":
                     counts = _read_ads_counts(cursor, dataset, batch, run_id, start, end, dept_code)
+                    if operations_start is not None:
+                        if not start <= operations_start <= end:
+                            raise OdsError("OUTPATIENT_ADS_SCOPE_INVALID")
+                        operations = dashboard_details.overview(
+                            cursor, dataset, operations_start, end, dept_code, operations_report=True,
+                        )
+                    elif dataset == COURSE_DATASET:
+                        registrations = course_indicators.registration_mix(cursor, dataset, start, end, dept_code)
+                        avg_cost = dashboard_details.visit_costs(cursor, dataset, start, end, dept_code)[0]["value"]
                 else:
                     counts = read_counts(cursor, dataset, start, end, dept_code)
         # Reject a certificate replaced while the snapshot was being read.
@@ -153,4 +165,7 @@ def _load_outpatient(start_date, end_date, dept_code, *, source, allowed_departm
             "department_codes": departments,
         },
         "counts": counts,
+        "registration_mix": registrations,
+        "outpatient_avg_cost": avg_cost,
+        "operations": operations,
     }

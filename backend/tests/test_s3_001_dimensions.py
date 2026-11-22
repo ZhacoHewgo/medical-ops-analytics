@@ -1,5 +1,6 @@
 """C8 pure behavior and coordinator-only integration checks."""
 from copy import deepcopy
+from unittest.mock import patch
 import pytest
 from etl.jobs import build_dims as dims
 
@@ -132,7 +133,9 @@ def test_schema_sql_exact_and_unknown_rejected():
 def test_upstream_real_rules_and_forgery(monkeypatch):
     source,report=n7_report(monkeypatch)
     assert report['gate_status']=='PASS'
-    dims._upstream(source,report,'test')
+    with patch.object(dims.quality, '_validate_snapshot', wraps=dims.quality._validate_snapshot) as validate:
+        dims._upstream(source,report,'test')
+        validate.assert_called_once()
     for mutate in [lambda r:r.update(score=float('nan')),lambda r:r.update(score=True),lambda r:r.update(planned_rules=33),lambda r:r.update(dataset_id='OTHER'),lambda r:r.update(gate_status='FAIL'),lambda r:r['rules'][0].update(hard_block=True),lambda r:r['rules'].pop(),lambda r:r.update(clean_run_id='22222222-2222-4222-8222-222222222222')]:
         bad=deepcopy(report); mutate(bad)
         with pytest.raises(sources.OdsError,match='^N8_UPSTREAM_GATE_FAILED$'): dims._upstream(source,bad,'test')

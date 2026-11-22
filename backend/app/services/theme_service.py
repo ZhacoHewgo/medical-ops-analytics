@@ -31,12 +31,24 @@ class ThemeRow(Metric):
     group: str
 
 
-class ThemePublication(BaseModel):
-    source: Literal["ads_income_theme", "ads_drg_theme", "ads_efficiency_theme"]
+class DetailRow(BaseModel):
+    name: str
+    label: str
+    count: int
+    value: str | None
+    group: str | None
+
+
+class Publication(BaseModel):
+    source: str
     batch_date: str
     build_run_id: str
     available_start_date: str
     available_end_date: str
+
+
+class ThemePublication(Publication):
+    source: Literal["ads_income_theme", "ads_drg_theme", "ads_efficiency_theme"]
 
 
 class ThemeSummary(BaseModel):
@@ -47,13 +59,67 @@ class ThemeSummary(BaseModel):
         metrics: dict[str, Metric]
         group_by: Literal["day", "department"]
         rows: list[ThemeRow]
+        details: dict[str, list[DetailRow]]
 
     code: Literal[0]
     msg: str
     data: Data
 
 
-def serve_summary(query, response, user, resource, load, **options):
+class DepartmentBeds(BaseModel):
+    bed_count: int | None
+    available_bed_days: int | None
+    occupied_bed_days: int
+    bed_usage_rate: str | None
+    bed_turnover: str | None = None
+
+
+class ResourceSummary(ThemeSummary):
+    class Data(ThemeSummary.Data):
+        department_beds: dict[str, DepartmentBeds] = Field(default_factory=dict)
+
+    data: Data
+
+
+class OverviewSummary(BaseModel):
+    class BedDay(BaseModel):
+        date: str
+        available: int
+        occupied: int
+
+    class Activity(BaseModel):
+        date: str
+        kind: Literal["OUTPATIENT", "INPATIENT"]
+        count: int
+
+    class DailyCharge(BaseModel):
+        date: str
+        amount: str | None
+
+    class Department(BaseModel):
+        code: str
+        label: str
+        outpatient: int
+        inpatient: int
+        amount: str | None
+
+    class Data(BaseModel):
+        filters: Filters
+        meta: Publication
+        activity: list["OverviewSummary.Activity"]
+        charges: list[DetailRow]
+        charge_total: str | None
+        daily_charges: list["OverviewSummary.DailyCharge"]
+        departments: list["OverviewSummary.Department"]
+        bed_usage_rate: Metric | None = None
+        bed_trend: list["OverviewSummary.BedDay"] = Field(default_factory=list)
+
+    code: Literal[0]
+    msg: str
+    data: Data
+
+
+def serve_summary(query, response, user, resource, load, *, action="query", **options):
     try:
         scope = apply_data_scope(query.dept_code, user)
         check_dates(query.start_date, query.end_date)
@@ -67,12 +133,12 @@ def serve_summary(query, response, user, resource, load, **options):
             data = load(query.start_date, query.end_date, scope, env=env,
                         dataset_id=dataset, batch_date=batch, build_run_id=run, **options)
         except OdsError as error:
-            if error.code in {"N10_RANGE_OUTSIDE_BUILD", "N10_DEPARTMENT_UNKNOWN"}:
+            if error.code in {"N10_RANGE_OUTSIDE_BUILD", "N10_DEPARTMENT_UNKNOWN", "N10_REPORT_TOO_LARGE"}:
                 raise HTTPException(422, "Dates or department outside certified build coverage") from None
             raise HTTPException(503, f"Certified {resource} mart unavailable or incomplete") from None
     except HTTPException as error:
-        audit_access(user, "query", user.department, error.status_code, resource=resource)
+        audit_access(user, action, user.department, error.status_code, resource=resource)
         raise
-    audit_access(user, "query", scope, 200, resource=resource)
+    audit_access(user, action, scope, 200, resource=resource)
     response.headers["Cache-Control"] = "no-store"
     return {"code": 0, "msg": "ok", "data": data}

@@ -81,8 +81,8 @@ GAPS = {
         "reason": "FEE_CATEGORY_RULE_UNCONFIRMED", "keywords": ("药品收入",),
     },
     "MOPS-DRUG-02": {
-        "title": "药占比", "theme": "药品", "unit": "%", "grade": "B",
-        "reason": "FEE_CATEGORY_RULE_UNCONFIRMED", "keywords": ("药品收入占比", "药占比"),
+        "title": "药品费占比", "theme": "药品", "unit": "%", "grade": "B",
+        "reason": "FEE_CATEGORY_RULE_UNCONFIRMED", "keywords": ("药品费占比", "药品收入占比", "药占比"),
     },
     "MOPS-DRUG-03": {
         "title": "住院药品费用占比", "theme": "药品", "unit": "%", "grade": "B",

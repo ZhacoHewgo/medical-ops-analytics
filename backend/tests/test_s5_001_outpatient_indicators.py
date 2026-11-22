@@ -10,7 +10,7 @@ import pytest
 from sql_fixture import execute_schema
 
 from etl.config import source_config as sources
-from etl.jobs import ads_indicators as indicators, aggregate_dws as marts, build_dims, build_dwd
+from etl.jobs import ads_indicators as indicators, aggregate_dws as marts, build_dims, build_dwd, dashboard_details
 from test_s2_003_pipeline import mysql_pipeline, sim_csv_rows
 from tests.test_accuracy_reconcile import reconcile_month
 
@@ -18,6 +18,51 @@ from tests.test_accuracy_reconcile import reconcile_month
 JAN, FEB, MAR, END = "2025-01-01", "2025-02-01", "2025-03-01", "2025-03-31"
 VOLUME, GROWTH = "MOPS-OUT-01", "MOPS-OUT-02"
 RESULT = "ads_indicator_result"
+
+
+def test_dashboard_reads_use_read_only_snapshot_without_etl_lock(monkeypatch):
+    monkeypatch.setattr(indicators, "_scope", lambda *args: JAN)
+
+    def locked(*args):
+        pytest.fail("dashboard reads must not contend for the ETL write lock")
+
+    def transaction(span, grain, dataset_id, batch_date, env, *, write, calculation, read_snapshot):
+        assert span == (None, None)
+        assert not write and read_snapshot
+        return "snapshot"
+
+    monkeypatch.setattr(indicators.scheduler, "_lock", locked)
+    monkeypatch.setattr(indicators, "_transaction", transaction)
+    scope = {"dataset_id": "SIM", "batch_date": JAN, "build_run_id": "current"}
+    assert indicators.summarize_theme("efficiency", None, None, None, **scope) == "snapshot"
+    assert indicators.summarize_inpatient(None, None, None, **scope) == "snapshot"
+    assert indicators.summarize_overview(None, None, None, **scope) == "snapshot"
+
+
+def test_overview_groups_days_and_departments_without_rounding(monkeypatch):
+    first, second = date(2025, 1, 1), date(2025, 1, 2)
+    results = iter((
+        [(first, "OUTPATIENT", "HN", "心内", 3), (second, "INPATIENT", "HN", "心内", 2)],
+        [(first, "HN", "心内", 2, 2, Decimal("0.30")), (second, "HN", "心内", 1, 1, Decimal("-0.10"))],
+    ))
+
+    class Cursor:
+        def execute(self, sql, params):
+            assert ".dept_code=%s" in sql
+            assert params == ("SIM", "HN", first, second)
+
+        def fetchall(self):
+            return next(results)
+
+    monkeypatch.setattr(dashboard_details, "_charges", lambda *args: {"visit_types": []})
+    result = dashboard_details.overview(Cursor(), "SIM", first, second, "HN")
+    assert result["charge_total"] == "0.20"
+    assert result["daily_charges"] == [
+        {"date": JAN, "amount": "0.30"}, {"date": "2025-01-02", "amount": "-0.10"},
+    ]
+    assert result["departments"] == [
+        {"code": "HN", "label": "心内", "outpatient": 3, "inpatient": 2, "amount": "0.20"},
+    ]
 
 
 @pytest.mark.parametrize("start,end,granularity,code", [

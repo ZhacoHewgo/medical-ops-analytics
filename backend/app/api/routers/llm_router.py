@@ -9,7 +9,7 @@ from app.core.auth_store import Account
 from app.core.deps import get_current_user
 from app.llm.kb import kb_answer
 from app.llm.nl2sql import run_nl_query
-from app.llm.report_gen import analyze_anomaly, gen_monthly_report, gen_weekly_report
+from app.llm.report_gen import analyze_anomaly, gen_monthly_report, gen_operations_report, gen_weekly_report
 
 
 router = APIRouter(prefix="/api/llm", tags=["只读问数"])
@@ -26,6 +26,7 @@ class ReportRequest(BaseModel):
     week: str | None = None
     month: str | None = None
     dept_code: str | None = Field(default=None, max_length=64)
+    mode: Literal["outpatient", "operations"] = "outpatient"
 
 
 class AnomalyRequest(BaseModel):
@@ -52,16 +53,20 @@ def ask_question(body: Question, response: Response, user: Annotated[Account, De
     return _audited(response, user, "outpatient_qa", lambda: run_nl_query(body.question, user))
 
 
-@router.post("/report", summary="生成认证门诊四章节周报或月报", responses=ERRORS)
+@router.post("/report", summary="生成认证运营周报或月报", responses=ERRORS)
 def generate_report(body: ReportRequest, response: Response, user: Annotated[Account, Depends(get_current_user)]):
     def produce():
         if body.type == "weekly" and body.week is not None and body.month is None:
+            if body.mode == "operations":
+                return gen_operations_report(body.type, body.week, user, department=body.dept_code)
             return gen_weekly_report(body.week, user, department=body.dept_code)
         if body.type == "monthly" and body.month is not None and body.week is None:
+            if body.mode == "operations":
+                return gen_operations_report(body.type, body.month, user, department=body.dept_code)
             return gen_monthly_report(body.month, user, department=body.dept_code)
         raise HTTPException(422, "请选择周报或月报，并仅填写对应期间")
 
-    return _audited(response, user, "outpatient_report", produce)
+    return _audited(response, user, "operations_report" if body.mode == "operations" else "outpatient_report", produce)
 
 
 @router.post("/anomaly", summary="按科室比较门诊人次波动", responses=ERRORS)
