@@ -502,6 +502,8 @@ def _same_shape_value(actual,expected):
 
 def _upstream(snapshot,report,env):
     try:
+        if type(report) is not dict or report.get('schema_version') not in quality.REPORT_VERSIONS:
+            _fail('N8_UPSTREAM_GATE_FAILED')
         config=quality._load_config()
         quality._validate_snapshot(snapshot,rules_version=config['rules_version'])
         rules=[]
@@ -517,8 +519,8 @@ def _upstream(snapshot,report,env):
             if rule['code']=='STALE': _fail('N8_STALE')
             if kind=='RECONCILE' and rule['status']!='PASS': _fail('N8_RECONCILE_FAILED')
             rules.append(rule)
-        expected=quality._summary(snapshot,rules,env)
-        if type(report) is not dict or set(report)!=set(expected): _fail('N8_UPSTREAM_GATE_FAILED')
+        expected=quality._summary(snapshot,rules,env,schema_version=report['schema_version'])
+        if set(report)!=set(expected): _fail('N8_UPSTREAM_GATE_FAILED')
         try: datetime.fromisoformat(report['generated_at'])
         except (ValueError,TypeError): _fail('N8_UPSTREAM_GATE_FAILED')
         expected['generated_at']=report['generated_at']

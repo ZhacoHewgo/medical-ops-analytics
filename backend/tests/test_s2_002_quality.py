@@ -200,9 +200,28 @@ class QualityTests(unittest.TestCase):
         refresh(self.snap)
         r = self.report()
         self.assertEqual(r["gate_status"], "FAIL")
-        self.assertAlmostEqual(r["score"], 825 / 17)
+        self.assertAlmostEqual(r["score"], 950 / 17)
         self.assertEqual(r["rule_status_counts"], dict(PASS=14, WARN=5, FAIL=15, NOT_EVALUATED=0))
         self.assertTrue(all(t["source_usable_ratio"] == 0.05 for t in r["tables"].values()))
+
+    def test_volume_warnings_keep_full_credit_in_current_report(self):
+        from etl.jobs import build_dims
+
+        self.snap = fixture((("2025-01-01", 10), ("2025-01-02", 14)))
+        report = self.report()
+        self.assertEqual(report["schema_version"], "node07-quality-v2")
+        self.assertEqual(report["score"], 100)
+        self.assertEqual(report["rule_status_counts"], dict(PASS=29, WARN=5, FAIL=0, NOT_EVALUATED=0))
+        self.assertEqual(sum(alert["code"] == "VOLUME_WAVE" for alert in report["alerts"]), 5)
+        build_dims._upstream(self.snap, report, "test")
+
+        previous = q._summary(self.snap, report["rules"], "test", schema_version="node07-quality-v1")
+        self.assertAlmostEqual(previous["score"], 1575 / 17)
+        build_dims._upstream(self.snap, previous, "test")
+        self.path().unlink()
+        q._write_report(previous)
+        self.assertEqual(self.report()["score"], 100)
+        self.assert_code("DQ_REPORT_IDENTITY_CONFLICT", lambda: q._write_report(previous))
 
     def test_wave_30_percent_boundary_and_missing_day(self):
         for n, status in ((7, "PASS"), (13, "PASS"), (14, "WARN"), (6, "WARN")):
