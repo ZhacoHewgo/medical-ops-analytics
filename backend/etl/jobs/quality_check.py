@@ -21,6 +21,9 @@ from etl.config.source_config import COURSE_DATASET, OdsError, SOURCES, database
 _LOG_ROOT = Path(__file__).resolve().parents[1] / "logs"
 _CONFIG = Path(__file__).resolve().parents[1] / "config/dwd_rules.json"
 _RULES_VERSION = "node07-rules-v1"
+LEGACY_REPORT_VERSION = "node07-quality-v1"
+REPORT_VERSION = "node07-quality-v2"
+REPORT_VERSIONS = (LEGACY_REPORT_VERSION, REPORT_VERSION)
 _MAPPING_VERSION = course_mapping.SIM_VERSION
 _COURSE_KEY_ID = "course-platform-v1-key"
 PRIVACY_KEY_ERRORS = frozenset(("DWD_PRIVACY_KEY_MISSING", "DWD_PRIVACY_KEY_INVALID"))
@@ -661,10 +664,14 @@ def _check_privacy(table, snapshot, *, env=None):
                                          patient_key_format_violations=shape, hmac_mismatch_rows=mismatch, fields=fields), causes)
 
 
-def _summary(snapshot, rules, env, *, include_tables=True):
+def _summary(snapshot, rules, env, *, include_tables=True, schema_version=REPORT_VERSION):
     counts = Counter(r["status"] for r in rules)
     p, w, f, n = (counts[s] for s in ("PASS", "WARN", "FAIL", "NOT_EVALUATED"))
-    executed = sum(r["execution_status"] == "COMPLETED" for r in rules); points = 2 * p + w
+    executed = sum(r["execution_status"] == "COMPLETED" for r in rules)
+    points = 2 * p + w
+    if schema_version == REPORT_VERSION:
+        points += sum(r["status"] == "WARN" and r["code"] == "VOLUME_WAVE"
+                      and r["rule_id"].endswith(".VOLUME_WAVE") for r in rules)
     empty = not include_tables or any(snapshot["tables"][t]["audit"]["accepted_rows"] == 0 for t in _SPECS)
     if empty or any(r["hard_block"] or r["execution_status"] != "COMPLETED" for r in rules) or 100 * executed < 95 * 34:
         gate = "FAIL"
@@ -688,7 +695,7 @@ def _summary(snapshot, rules, env, *, include_tables=True):
         for code, value in rule["details"]["reason_counts"].items():
             if code != "OK" and value:
                 alerts.append(dict(rule_id=rule["rule_id"], code=code, severity=rule["severity"]))
-    return dict(schema_version="node07-quality-v1", env=env, dataset_id=snapshot["dataset_id"], clean_run_id=snapshot["clean_run_id"],
+    return dict(schema_version=schema_version, env=env, dataset_id=snapshot["dataset_id"], clean_run_id=snapshot["clean_run_id"],
                 batch_date=_day(snapshot["batch_date"]).isoformat(), rules_version=snapshot["rules_version"], mapping_version=snapshot["mapping_version"],
                 privacy_key_id=snapshot["privacy_key_id"], generated_at=datetime.now(timezone.utc).isoformat(), planned_rules=34,
                 executed_rules=executed, evaluated_rules=p + w + f, coverage=100 * executed / 34, data_evaluability=100 * (p + w + f) / 34,
@@ -750,8 +757,11 @@ def _write_report(report):
                     if old_stat.st_size > 2_000_000:
                         _fail("DQ_REPORT_IDENTITY_CONFLICT")
                     previous = json.load(stream)
-                    identity = ("schema_version", "env", "dataset_id", "batch_date", "rules_version", "privacy_key_id")
+                    identity = ("env", "dataset_id", "batch_date", "rules_version", "privacy_key_id")
                     if not isinstance(previous, dict) or any(previous.get(k) != report[k] for k in identity):
+                        _fail("DQ_REPORT_IDENTITY_CONFLICT")
+                    versions = (previous.get("schema_version"), report["schema_version"])
+                    if versions[0] != versions[1] and versions != REPORT_VERSIONS:
                         _fail("DQ_REPORT_IDENTITY_CONFLICT")
                     if previous.get("mapping_version") != report["mapping_version"] and not (
                         report["dataset_id"] == COURSE_DATASET and previous.get("gate_status") == "FAIL"

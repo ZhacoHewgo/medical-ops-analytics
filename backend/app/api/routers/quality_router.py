@@ -11,6 +11,7 @@ from app.api.routers.operations_router import ERRORS, Reader, Result, _reply
 from app.outpatient_response import check_dates
 from etl.config.source_config import OdsError, validate_dataset
 from etl.jobs import build_dwd
+from etl.jobs.quality_check import REPORT_VERSIONS
 
 
 router = APIRouter(prefix="/api/ops", tags=["数据质量"])
@@ -24,6 +25,7 @@ class QualityBatch(BaseModel):
     planned_rules: int = Field(ge=0)
     executed_rules: int = Field(ge=0)
     evaluated_rules: int = Field(ge=0)
+    warning_rules: int = Field(ge=0, le=34)
 
 
 @router.get("/quality", response_model=Result[list[QualityBatch]], responses=ERRORS,
@@ -57,11 +59,13 @@ def get_quality_report(actor: Reader, response: Response, start_date: Annotated[
             report, _ = build_dwd._read_quality_report(env, batch)
             if report.get("dataset_id") != dataset:
                 continue
-            if (report.get("schema_version"), report.get("env"), report.get("batch_date")) != (
-                "node07-quality-v1", env, batch,
+            if report.get("schema_version") not in REPORT_VERSIONS or (report.get("env"), report.get("batch_date")) != (
+                env, batch,
             ):
                 raise ValueError
-            reports.append(QualityBatch.model_validate({key: report[key] for key in QualityBatch.model_fields}))
-    except (OdsError, OSError, ValueError, AttributeError, KeyError):
+            summary = {key: report[key] for key in QualityBatch.model_fields if key != "warning_rules"}
+            summary["warning_rules"] = report["rule_status_counts"]["WARN"]
+            reports.append(QualityBatch.model_validate(summary))
+    except (OdsError, OSError, ValueError, AttributeError, KeyError, TypeError):
         raise HTTPException(503, "Published quality summary unavailable") from None
     return _reply(response, reports)

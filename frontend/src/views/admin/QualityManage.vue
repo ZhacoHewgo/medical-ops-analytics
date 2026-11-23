@@ -69,7 +69,8 @@ onMounted(load)
         <dl class="metric-tiles">
           <div><dt>质检结论</dt><dd><span class="status-chip"
             :class="{ 'status-chip-attention': latest.gate_status !== 'PASS' }">{{ gateLabels[latest.gate_status] }}</span></dd></div>
-          <div><dt>质量评分</dt><dd class="quality-score">{{ formatMetric(latest.score, '分') }}</dd></div>
+          <div><dt>质量评分</dt><dd class="quality-score">{{ formatMetric(latest.score, '分') }}</dd>
+            <dd v-if="latest.warning_rules > 0">{{ latest.warning_rules }} 条告警</dd></div>
           <div><dt>规则覆盖率</dt><dd>{{ formatMetric(latest.coverage, '%') }}</dd></div>
           <div><dt>已执行 / 计划规则</dt><dd>{{ latest.executed_rules }} / {{ latest.planned_rules }}</dd></div>
         </dl>

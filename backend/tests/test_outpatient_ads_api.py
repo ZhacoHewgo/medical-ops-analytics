@@ -196,7 +196,7 @@ def test_mysql_ads_summary_export_and_scope(mysql_pipeline, auth_client, monkeyp
         assert quality_rows[0]["batch_date"] == batch and quality_rows[0]["gate_status"] == "PASS"
         assert quality_rows[0]["executed_rules"] == 34
         assert set(quality_rows[0]) == {
-            "batch_date", "gate_status", "score", "coverage", "planned_rules", "executed_rules", "evaluated_rules",
+            "batch_date", "gate_status", "score", "coverage", "planned_rules", "executed_rules", "evaluated_rules", "warning_rules",
         }
         assert client.get(INPATIENT, headers=analyst).status_code == 503
         assert client.get(INPATIENT, headers=department, params={"dept_code": OTHER}).status_code == 403
