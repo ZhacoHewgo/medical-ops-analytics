@@ -11,6 +11,8 @@
 - [资源效率](docs/screenshots/04-resource.png)
 - [多维报表](docs/screenshots/05-multidimensional-report.png)
 - [综合运营月报](docs/screenshots/06-operations-report.png)
+- [智能问数](docs/screenshots/07-ask-data.png)
+- [数据质量](docs/screenshots/08-data-quality.png)
 
 | 导航分组 | 页面与功能 |
 | --- | --- |
