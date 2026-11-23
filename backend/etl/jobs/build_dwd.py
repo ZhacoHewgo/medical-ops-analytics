@@ -928,8 +928,18 @@ def _conserve(columns,actual,expected,primary_key):
     def ordered(rows):
         return sorted(rows,key=lambda r:tuple(str(r[c]).encode('utf-8') for c in primary_key))
     left=ordered(actual); right=ordered(expected)
-    if len(left)!=len(right) or any([_typed(a[c]) for c in columns]!=[_typed(b[c]) for c in columns] for a,b in zip(left,right)):
+    if len(left) != len(right):
         raise OdsError('N8_RECONCILE_FAILED') from None
+    plain = (str, int, date, type(None))
+    for a, b in zip(left, right):
+        for column in columns:
+            x, y = a[column], b[column]
+            if type(x) is type(y) and type(x) in plain:
+                equal = x == y
+            else:
+                equal = _typed(x) == _typed(y)
+            if not equal:
+                raise OdsError('N8_RECONCILE_FAILED') from None
     for column in set(columns)&{'amount','source_total_fee','source_drug_fee','source_consumable_fee','residual_fee'}:
         with localcontext(_MONEY_CONTEXT):
             counts=[sum(row[column] is None for row in rows) for rows in (left,right)]

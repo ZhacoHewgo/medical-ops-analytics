@@ -1,6 +1,6 @@
 """Bounded Chinese question planner over the frozen metric catalogue."""
 from calendar import monthrange
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import os
@@ -247,8 +247,8 @@ _CANDIDATE_FIELDS = {"indicator", "start_date", "end_date", "scope", "series", "
 
 
 def _metric_meta():
-    return [{"code": code, "title": item["title"], "unit": item["unit"], "keywords": list(item["keywords"])}
-            for code, item in catalog.METRICS.items() if catalog.is_served(code)]
+    return [{"code": code, "title": item["title"], "keywords": list(item["keywords"])}
+            for code, item in catalog.METRICS.items()]
 
 
 def _dim_schema():
@@ -538,7 +538,7 @@ def _gap_answer(intent, entry, department):
     }
 
 
-def run_nl_query(question, user, *, generator=None):
+def run_nl_query(question, user, *, generator=None, on_origin=None):
     from etl.config.source_config import COURSE_DATASET
 
     normalized = normalize("NFKC", question) if isinstance(question, str) else ""
@@ -547,6 +547,20 @@ def run_nl_query(question, user, *, generator=None):
         raise HTTPException(403, "科室范围越权")
     intent = parse_intent(question)
     department = _enforce_scope(intent, user)
+    origin = "rules"
+    if generator is not None:
+        candidate, origin = _generated_intent(question, generator)
+        if origin == "model":
+            try:
+                same_scope = _enforce_scope(candidate, user) == department
+            except HTTPException:
+                same_scope = False
+            if same_scope and replace(candidate, scope=intent.scope) == intent:
+                intent = candidate
+            else:
+                origin = "model-fallback"
+    if on_origin is not None:
+        on_origin(origin)
     entry = catalog.entry(intent.code)
     course_summary = (intent.code in {"MOPS-INP-04", "MOPS-DRUG-02"}
                       and os.environ.get("OUTPATIENT_PREVIEW_DATASET_ID") == COURSE_DATASET)
@@ -554,25 +568,23 @@ def run_nl_query(question, user, *, generator=None):
         return _gap_answer(intent, entry, department)
     from app.llm import readers
 
-    deadline = time.monotonic() + BUDGET_SECONDS
+    deadline = time.monotonic() + (BUDGET_SECONDS if course_summary else 2 * BUDGET_SECONDS)
     if course_summary:
         if intent.growth:
             raise HTTPException(422, "当前仅支持门诊人次自然月环比")
         observation = readers.course_summary(intent.code, intent.first, intent.last, department)
     else:
-        if generator is None:
-            plan = generate_sql(intent, user, department=department)
-        else:
-            plan = generate_sql(question, user, department=department, generator=generator)
-            if plan.metric != intent.code:
-                plan = generate_sql(intent, user, department=department)
-        rows = execute_plan(plan)
-        deadline = time.monotonic() + BUDGET_SECONDS
+        plan = generate_sql(intent, user, department=department)
+        if origin != "rules":
+            plan = replace(plan, origin=origin)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise HTTPException(503, "问数查询超出时限，请缩小查询范围后重试")
+        rows = execute_plan(plan, budget=min(BUDGET_SECONDS, remaining))
         observation = readers.READERS[intent.code](intent.first, intent.last, department, user, intent.series)
+        _cross_check(plan, observation, rows)
     if time.monotonic() > deadline:
         raise HTTPException(503, "问数查询超出时限，请缩小查询范围后重试")
-    if not course_summary:
-        _cross_check(plan, observation, rows)
     return {
         "indicator_code": intent.code, "unit": observation.get("unit", entry["unit"]),
         "scope": {"department": department}, "chart_type": observation.get("chart_type", "number"),

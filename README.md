@@ -80,14 +80,16 @@ for name, spec in SOURCES.items():
 PY
 ```
 
-5. 跑采集、清洗、质检及宽表构建。看到 `ETL_OK` 后，按实际覆盖区间发布八主题集市，并导出当前构建号供 API 使用。
+5. 跑采集、清洗、质检及宽表构建。看到 `ETL_OK` 后，按实际覆盖区间发布八主题集市，回刷日、月指标至 `ads_indicator_result`，并导出当前构建号供 API 使用。不完整月份按缺值处理。
 
 ```sh
-.venv/bin/python -m etl.jobs.run_all --env dev --through dwd
+.venv/bin/python -m etl.jobs.run_all --env dev --through dwd &&
 OUTPATIENT_PREVIEW_BUILD_RUN_ID=$(.venv/bin/python - <<'PY'
+from calendar import monthrange
 from os import environ
 
 from etl.config.source_config import COURSE_DATASET, connect_database
+from etl.jobs.ads_indicators import rerun as rerun_indicators
 from etl.jobs.backfill import backfill
 
 batch = environ["OUTPATIENT_PREVIEW_BATCH_DATE"]
@@ -97,13 +99,18 @@ with connect_database() as connection, connection.cursor() as cursor:
         "WHERE dataset_id=%s AND batch_date=%s", (COURSE_DATASET, batch),
     )
     run_id, first, last = cursor.fetchone()
-result = backfill(first.isoformat(), last.isoformat(), dataset_id=COURSE_DATASET, batch_date=batch)
+scope = {"dataset_id": COURSE_DATASET, "batch_date": batch}
+result = backfill(first.isoformat(), last.isoformat(), **scope)
 if result["status"] != "PASS":
     raise SystemExit("集市发布失败")
+month_last = last.replace(day=monthrange(last.year, last.month)[1])
+for grain, start, end in (("day", first, last), ("month", first.replace(day=1), month_last)):
+    result = rerun_indicators((start.isoformat(), end.isoformat()), grain, **scope)
+    if result["status"] != "PASS" or result["rows"] == 0:
+        raise SystemExit(f"{grain} 指标回刷失败")
 print(run_id)
 PY
-)
-export OUTPATIENT_PREVIEW_BUILD_RUN_ID
+) && export OUTPATIENT_PREVIEW_BUILD_RUN_ID
 ```
 
 6. 创建管理员，根据终端提示输入至少 12 字节的密码。后端沿用上面终端中的配置。
@@ -120,7 +127,7 @@ cd frontend
 npm run dev
 ```
 
-打开 [本地网页](http://127.0.0.1:5173)，用刚创建的账号登录。
+打开 [本地网页](http://127.0.0.1:5173)，用刚创建的账号登录。「数据质量」可按批次日期查看评分、规则覆盖率和执行数。
 
 ## 测试
 
@@ -133,3 +140,5 @@ PYTHONPATH=backend .venv/bin/python -m pytest backend/tests tests
 ```
 
 MySQL 集成测试需单独配置 `ODS_TEST_DATABASE_URL`，指向隔离的 `hospital_test`。
+
+实测范围和未达验收项见[阶段验收记录](docs/验收报告.md)。

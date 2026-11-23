@@ -1,10 +1,12 @@
 import argparse
+from calendar import monthrange
 from collections import Counter, defaultdict
 import csv
 from datetime import date, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 import io
 import json
+import re
 from zipfile import ZipFile
 
 from etl.config.source_config import COURSE_DATASET, connect_database
@@ -38,6 +40,7 @@ def _read(bundle, name, columns):
 
 def reference(path):
     samples = defaultdict(Counter)
+    bed_counts = Counter()
 
     def add(day, dept, values):
         if START <= day <= BATCH:
@@ -56,14 +59,18 @@ def reference(path):
                                              ("emr_count", "OUTPATIENT"): 1,
                                              ("emr_link", "OUTPATIENT"): int((visit, patient, dept, dt) in links)})
         inpatient = ("visit_id", "patient_id", "dept_code", "admit_date", "discharge_date", "stay_days",
-                     "disease_code", "total_fee", "drug_fee", "consumable_fee")
-        for visit, patient, dept, admit, discharge, days, dx, bill, drug, goods in _read(bundle, "his_inpatient", inpatient):
+                     "disease_code", "total_fee", "drug_fee", "consumable_fee", "bed_no")
+        for visit, patient, dept, admit, discharge, days, dx, bill, drug, goods, bed in _read(bundle, "his_inpatient", inpatient):
             assert (visit, patient, dept, admit) not in outpatient_keys, "Ambiguous course visit linkage"
             diagnosed = date.fromisoformat(discharge)
             diagnoses.add(dx)
+            bed_number = re.search(r"[0-9]+$", bed.strip())
+            if bed_number:
+                bed_counts[dept] = max(bed_counts[dept], int(bed_number.group()))
             add(diagnosed, dept, {"ip": 1, "stay": Decimal(days), "ip_bill": Decimal(bill), "ip_drug": Decimal(drug),
-                                  "ip_goods": Decimal(goods), ("diagnosed", dx): 1, ("dx_bill", dx): Decimal(bill)})
-            add(date.fromisoformat(admit), dept, {("emr_count", "INPATIENT"): 1,
+                                  "ip_goods": Decimal(goods), ("diagnosed", dx): 1, ("dx_bill", dx): Decimal(bill),
+                                  ("dx_stay", dx): Decimal(days)})
+            add(date.fromisoformat(admit), dept, {"admissions": 1, ("emr_count", "INPATIENT"): 1,
                                                  ("emr_link", "INPATIENT"): int((visit, patient, dept, admit) in links)})
             assert (diagnosed - date.fromisoformat(admit)).days == int(days)
             for day_before_discharge in range(1, int(days) + 1):
@@ -103,6 +110,17 @@ def reference(path):
         _, denominator, value, reason = ratio(unrounded, cases)
         return unrounded.quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP), denominator, value, reason
 
+    def consumption(data, kind):
+        cases = data["ip"]
+        if not cases:
+            return ratio(0, 0)
+        mean = {key: baseline[kind, key] / baseline["diagnosed", key] for key in diagnoses}
+        if any(data["diagnosed", key] and mean[key] <= 0 for key in diagnoses):
+            return None, None, None, "DISEASE_REFERENCE_INCOMPLETE"
+        weighted = sum(data[kind, key] / mean[key] for key in diagnoses if data["diagnosed", key])
+        _, denominator, value, reason = ratio(weighted, cases)
+        return weighted.quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP), denominator, value, reason
+
     full = {}
     for grain, periods in (("day", [START + timedelta(days=i) for i in range((BATCH - START).days + 1)]),
                            ("month", [date(2025, month, 1) for month in (4, 5, 6)])):
@@ -115,6 +133,8 @@ def reference(path):
                     data.update(samples[grain, period, item])
                     prior.update(samples[grain, previous, item])
                 scope = "ALL" if dept is None else "DEPT:" + dept
+                capacity = sum(bed_counts[item] for item in candidates)
+                days = monthrange(period.year, period.month)[1] if grain == "month" else 1
                 amounts = {
                     **{key: (None, None, None, reason) for key, reason in EMPTY.items()
                        if grain == "month" or key not in {"MOPS-OUT-03", "MOPS-INC-03"}},
@@ -128,10 +148,21 @@ def reference(path):
                     "MOPS-CONS-02": ratio(data["fee", "CONSUMABLE"], data["charge"], 100),
                     "MOPS-CONS-03": ratio(data["ip_goods"], data["ip_bill"], 100),
                     "MOPS-INP-SIM-01": scalar(data["person_day"]),
+                    "MOPS-INP-SIM-02": scalar(data["admissions"]),
                     "MOPS-DIS-SIM-01": cmi(data),
                     "MOPS-DIS-SIM-02": ratio(sum(data["diagnosed", key] for key in diagnoses), data["ip"], 100),
+                    "MOPS-DIS-SIM-03": consumption(data, "dx_bill"),
+                    "MOPS-DIS-SIM-04": consumption(data, "dx_stay"),
                     "MOPS-EFF-SIM-01": ratio(data["ip_charge"], data["person_day"]),
                 }
+                bed_metrics = {
+                    "MOPS-EFF-SIM-02": scalar(capacity * days),
+                    "MOPS-EFF-SIM-03": ratio(data["person_day"], capacity * days, 100),
+                    "MOPS-EFF-SIM-04": ratio(data["ip"], capacity),
+                }
+                if any(not bed_counts[item] for item in candidates):
+                    bed_metrics = dict.fromkeys(bed_metrics, (None, None, None, "BED_CAPACITY_MISSING"))
+                amounts.update(bed_metrics)
                 if grain == "month":
                     for code, key in (("MOPS-OUT-02", "out"), ("MOPS-INC-02", "charge")):
                         amounts[code] = (ratio(data[key] - prior[key], prior[key], 100) if previous >= START else

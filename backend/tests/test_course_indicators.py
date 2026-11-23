@@ -110,3 +110,29 @@ def test_consumption_index_weights_each_diagnosis_by_selected_cases():
                 ("disease_amount", "A09"): 300, ("disease_amount", "E11"): 100}
     assert course.consumption_index(selected, full, "disease_amount") == Decimal("1.166667")
     assert course.consumption_index(selected, {**full, ("disease_amount", "E11"): 0}, "disease_amount") is None
+
+
+def test_course_rows_use_fixed_beds_and_disease_reference(monkeypatch):
+    first, last = date(2025, 5, 1), date(2025, 5, 31)
+    hospital = {"ip_count": 3, ("disease_count", "A09"): 3, ("disease_amount", "A09"): 300,
+                ("disease_stay", "A09"): 12}
+    selected = {"ip_count": 1, ("disease_count", "A09"): 1, ("disease_amount", "A09"): 50,
+                ("disease_stay", "A09"): 2}
+    monkeypatch.setattr(course, "_inpatient_facts", lambda *args: hospital)
+    monkeypatch.setattr(course, "_bed_capacities", lambda *args: {"HN": 20, "EK": 10, "HX": None})
+    for name in ("_outpatient", "_charges"):
+        monkeypatch.setattr(course, name, lambda *args: None)
+    monkeypatch.setattr(course, "_inpatient", lambda _c, _d, _f, _l, daily: daily.update({(first, "HN"): selected.copy()}))
+    monkeypatch.setattr(course, "_patient_days",
+                        lambda _c, _d, _f, _l, daily: daily[first, "HN"].update(service_days=31))
+    codes = (*sorted(course.BED_METRICS), *course.DISEASE_INDICES, "MOPS-INP-SIM-01")
+    entries = course.rows(None, "course", last, "run", "month", [(first, last)], [None, "HN", "EK"], codes, first, last)
+    measures = {(row[1], row[2]): row[9:] for row in entries}
+    assert measures["MOPS-EFF-SIM-02", "ALL"] == (None, None, None, "NULL", "BED_CAPACITY_MISSING")
+    assert measures["MOPS-EFF-SIM-02", "DEPT:HN"] == (620, None, 620, "OK", None)
+    assert measures["MOPS-EFF-SIM-03", "DEPT:HN"] == (31, 620, Decimal("5"), "OK", None)
+    assert measures["MOPS-EFF-SIM-04", "DEPT:HN"] == (1, 20, Decimal("0.05"), "OK", None)
+    assert measures["MOPS-INP-SIM-01", "DEPT:HN"][2] == 31
+    assert measures["MOPS-DIS-SIM-03", "DEPT:HN"][2] == Decimal("0.5")
+    assert measures["MOPS-DIS-SIM-04", "DEPT:HN"][2] == Decimal("0.5")
+    assert measures["MOPS-DIS-SIM-04", "DEPT:EK"] == (0, 0, None, "NULL", "ZERO_BASE")

@@ -8,6 +8,9 @@ from etl.jobs.multidimensional_report import LEDGER, daily_metrics
 VISIT_TYPES = {"普通": "NORMAL", "专家": "SPECIALIST", "急诊": "EMERGENCY"}
 CMI_ESTIMATE = "MOPS-DIS-SIM-01"
 DRG_RATE_ESTIMATE = "MOPS-DIS-SIM-02"
+DISEASE_INDICES = {"MOPS-DIS-SIM-03": "disease_amount", "MOPS-DIS-SIM-04": "disease_stay"}
+BED_METRICS = {"MOPS-EFF-SIM-02", "MOPS-EFF-SIM-03", "MOPS-EFF-SIM-04"}
+ADMISSIONS = "MOPS-INP-SIM-02"
 METRICS = {
     "MOPS-OUT-04": ("元/人次", "course-outpatient-bill-v1"),
     "MOPS-OUT-05": ("%", "course-outpatient-type-v1"),
@@ -23,9 +26,15 @@ METRICS = {
     "MOPS-DIS-02": ("元/人次", "course-diagnosis-bill-v1"),
     CMI_ESTIMATE: ("指数", "course-disease-cost-cmi-v1"),
     DRG_RATE_ESTIMATE: ("%", "course-coded-discharge-v1"),
+    "MOPS-DIS-SIM-03": ("指数", "course-disease-cost-index-v1"),
+    "MOPS-DIS-SIM-04": ("指数", "course-disease-stay-index-v1"),
     "MOPS-SRV-05": ("%", "course-visit-emr-link-v1"),
     "MOPS-INP-SIM-01": ("人日", "course-admit-days-v1"),
+    ADMISSIONS: ("人次", "course-inpatient-admissions-v1"),
     "MOPS-EFF-SIM-01": ("元/人日", "course-charge-per-patientday-v1"),
+    "MOPS-EFF-SIM-02": ("床日", "course-bed-available-days-v1"),
+    "MOPS-EFF-SIM-03": ("%", "course-bed-usage-v1"),
+    "MOPS-EFF-SIM-04": ("次", "course-bed-turnover-v1"),
 }
 MISSING = {
     "MOPS-OUT-03": ("%", "NO_COMPARABLE_YEAR"),
@@ -170,7 +179,7 @@ def _patient_days(cursor, dataset, first, last, daily, department=None):
     add_patient_days(daily, cursor.fetchall(), first, last + timedelta(days=1))
 
 
-def resource_bed_metrics(cursor, dataset, first, last, department, *, include_trend=False):
+def _bed_capacities(cursor, dataset, department=None):
     dept_clause = " AND v.dept_code=%s" if department is not None else ""
     cursor.execute(
         "SELECT v.dept_code,MAX(CAST(REGEXP_SUBSTR(TRIM(o.bed_no), '[0-9]+$') AS UNSIGNED)) "
@@ -179,7 +188,15 @@ def resource_bed_metrics(cursor, dataset, first, last, department, *, include_tr
         f"WHERE v.dataset_id=%s AND v.visit_type='INPATIENT'{dept_clause} GROUP BY v.dept_code",
         (dataset, department) if department is not None else (dataset,),
     )
-    capacities = dict(cursor.fetchall())
+    return dict(cursor.fetchall())
+
+
+def _total_capacity(capacities):
+    return sum(capacities.values()) if capacities and all(capacities.values()) else None
+
+
+def resource_bed_metrics(cursor, dataset, first, last, department, *, include_trend=False):
+    capacities = _bed_capacities(cursor, dataset, department)
     daily = {}
     _patient_days(cursor, dataset, first, last, daily, department)
     occupied = dict.fromkeys(capacities, 0)
@@ -200,7 +217,7 @@ def resource_bed_metrics(cursor, dataset, first, last, department, *, include_tr
         code: {"bed_count": capacity or None, **measure(capacity, occupied[code])}
         for code, capacity in sorted(capacities.items())
     }
-    total_capacity = sum(capacities.values()) if capacities and all(capacities.values()) else None
+    total_capacity = _total_capacity(capacities)
     summary = {
         key: {"value": str(value) if value is not None else None,
               "null_reason": "BED_CAPACITY_MISSING" if value is None else None}
@@ -275,19 +292,26 @@ def _inpatient_facts(cursor, dataset, first, last, department=None):
     return total
 
 
-def consumption_index(selected, reference, key):
+def _consumption_measure(selected, reference, key):
     counts = _disease_counts(selected)
     reference_counts = _disease_counts(reference)
-    if not counts or "UNKNOWN" in counts:
-        return None
+    if not counts:
+        return _ratio(0, 0)
+    if "UNKNOWN" in counts:
+        return None, None, None, "DISEASE_CODE_MISSING"
     weighted = Decimal(0)
     for code, count in counts.items():
         actual = selected.get((key, code))
         baseline = reference.get((key, code))
         if actual is None or baseline is None or baseline <= 0 or code not in reference_counts:
-            return None
+            return None, None, None, "DISEASE_REFERENCE_INCOMPLETE"
         weighted += Decimal(actual) * reference_counts[code] / baseline
-    return _ratio(weighted, sum(counts.values()))[2]
+    _, denominator, value, reason = _ratio(weighted, sum(counts.values()))
+    return weighted.quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP), denominator, value, reason
+
+
+def consumption_index(selected, reference, key):
+    return _consumption_measure(selected, reference, key)[2]
 
 
 def disease_estimates(cursor, dataset, first, last, department, low, high):
@@ -327,7 +351,7 @@ def measure(code, facts, prior, category):
         return None, None, None, "EMR_LINK_AMBIGUOUS"
     amounts = {"MOPS-INC-01": "charges", "MOPS-DRUG-01": ("fee_amount", "DRUG"),
                "MOPS-CONS-01": ("fee_amount", "CONSUMABLE"), "MOPS-DIS-01": ("disease_count", category),
-               "MOPS-INP-SIM-01": "service_days"}
+               "MOPS-INP-SIM-01": "service_days", ADMISSIONS: "admissions"}
     if code in amounts:
         return _scalar(facts.get(amounts[code], 0))
     numerator, denominator, multiplier = {
@@ -343,17 +367,41 @@ def measure(code, facts, prior, category):
     return _ratio(facts.get(numerator, 0), facts.get(denominator, 0), multiplier)
 
 
+def _bed_measure(code, capacity, days, facts):
+    if not capacity:
+        return None, None, None, "BED_CAPACITY_MISSING"
+    available = capacity * days
+    if code == "MOPS-EFF-SIM-02":
+        return _scalar(available)
+    if code == "MOPS-EFF-SIM-03":
+        return _ratio(facts.get("service_days", 0), available, 100)
+    return _ratio(facts.get("ip_count", 0), capacity)
+
+
 def rows(cursor, dataset, batch, run, grain, periods, scopes, metrics, low, high):
     first, last = periods[0][0], periods[-1][1]
     read_first = max(low, (first - timedelta(days=1)).replace(day=1)) if grain == "month" and first > low else max(low, first)
     read_last = min(last, high)
-    weights = estimate_weights(_inpatient_facts(cursor, dataset, low, high)) if CMI_ESTIMATE in metrics else {}
+    reference = (_inpatient_facts(cursor, dataset, low, high)
+                 if {CMI_ESTIMATE, *DISEASE_INDICES}.intersection(metrics) else {})
+    weights = estimate_weights(reference) if CMI_ESTIMATE in metrics else {}
+    capacities = _bed_capacities(cursor, dataset) if BED_METRICS.intersection(metrics) else {}
+    capacity_by_scope = {None: _total_capacity(capacities), **capacities}
     daily = {}
     if any(code in METRICS for code in metrics):
         _outpatient(cursor, dataset, read_first, read_last, daily)
         _inpatient(cursor, dataset, read_first, read_last, daily)
         _charges(cursor, dataset, read_first, read_last, daily)
         _patient_days(cursor, dataset, read_first, read_last, daily)
+        if ADMISSIONS in metrics:
+            cursor.execute(
+                "SELECT admit_date,dept_code,COUNT(*) FROM dwd_visit_detail "
+                "WHERE dataset_id=%s AND visit_type='INPATIENT' AND admit_date BETWEEN %s AND %s "
+                "GROUP BY admit_date,dept_code",
+                (dataset, read_first, read_last),
+            )
+            for day, dept, count in cursor.fetchall():
+                daily.setdefault((day, dept), {})["admissions"] = count
         if "MOPS-SRV-05" in metrics:
             _linked_visits(cursor, dataset, read_first, read_last, daily)
         if "MOPS-INC-05" in metrics:
@@ -396,6 +444,10 @@ def rows(cursor, dataset, batch, run, grain, periods, scopes, metrics, low, high
                         result = estimate_cmi(current, weights)
                     elif code == DRG_RATE_ESTIMATE:
                         result = estimate_drg_rate(current)
+                    elif code in DISEASE_INDICES:
+                        result = _consumption_measure(current, reference, DISEASE_INDICES[code])
+                    elif code in BED_METRICS:
+                        result = _bed_measure(code, capacity_by_scope.get(scope), (end - period).days + 1, current)
                     else:
                         result = measure(code, current, prior, category)
                     numerator, denominator, value, reason = result

@@ -580,7 +580,7 @@ def test_run_nl_query_uses_the_candidate_only_when_it_agrees_with_the_rules(sql_
     monkeypatch.setattr(nl2sql, "execute_plan", execute)
 
     def agree(question, prompt):
-        return {"indicator": "门诊人次", "start_date": JAN, "end_date": LAST, "scope": "全院"}
+        return {"indicator": "门诊人次", "start_date": FEB, "end_date": LAST, "scope": "全院"}
 
     answer = nl2sql.run_nl_query("2025-02 全院门诊人次", _Account(), generator=agree)
     assert answer["indicator_code"] == "MOPS-OUT-01" and origins == ["model"]
@@ -589,7 +589,35 @@ def test_run_nl_query_uses_the_candidate_only_when_it_agrees_with_the_rules(sql_
         return {"indicator": "医疗收入总额", "start_date": FEB, "end_date": LAST, "scope": "全院"}
 
     answer = nl2sql.run_nl_query("2025-02 全院门诊人次", _Account(), generator=disagree)
-    assert answer["indicator_code"] == "MOPS-OUT-01" and origins == ["model", "rules"]
+    assert answer["indicator_code"] == "MOPS-OUT-01" and origins == ["model", "model-fallback"]
+
+    def wrong_date(question, prompt):
+        return {"indicator": "门诊人次", "start_date": JAN, "end_date": LAST, "scope": "全院"}
+
+    answer = nl2sql.run_nl_query("2025-02 全院门诊人次", _Account(), generator=wrong_date)
+    assert answer["points"][0]["start_date"] == FEB and origins[-1] == "model-fallback"
+
+
+@pytest.mark.parametrize("scope, sent_scope", [("全院", "全院"), ("科室=PRIVATE123", "科室=DEPT")])
+def test_remote_model_receives_only_the_validated_question_fields(monkeypatch, scope, sent_scope):
+    from app.llm import model_client, nl2sql
+
+    monkeypatch.setenv("LLM_API_BASE_URL", "https://model.example.test/v1")
+    monkeypatch.setenv("LLM_MODEL", "demo")
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    monkeypatch.delenv("LLM_TIMEOUT_SECONDS", raising=False)
+    question = f"附注示例 2025-02 {scope}门诊人次"
+
+    async def complete(url, model, key, timeout, messages):
+        assert url.host == "model.example.test"
+        assert model == "demo" and key == "" and timeout == 8
+        payload = json.loads(messages[-1]["content"])
+        assert payload["question"] == f"2025-02-01 至 2025-02-28 {sent_scope} MOPS-OUT-01"
+        return {"indicator": "MOPS-OUT-01", "scope": sent_scope}
+
+    monkeypatch.setattr(model_client, "_completion", complete)
+    generator = model_client.configured_generator()
+    assert generator(question, nl2sql.candidate_prompt(question)) == {"indicator": "MOPS-OUT-01", "scope": scope}
 
 
 def test_execute_plan_rejects_forged_or_unlisted_plans(sql_env):
