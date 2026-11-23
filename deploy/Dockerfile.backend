@@ -1,11 +1,12 @@
 FROM public.ecr.aws/docker/library/python@sha256:e48f59cdba69a3cbd9ed2cf0f348d90d45a8d350d98134cf1070bc106ee9ed90
 WORKDIR /app/backend
-COPY backend/requirements.txt /tmp/backend-requirements.txt
-RUN awk '/^(fastapi|uvicorn)>/ {print}' /tmp/backend-requirements.txt > /tmp/api-requirements.txt \
-    && test "$(wc -l < /tmp/api-requirements.txt)" = 2 \
-    && python -m pip install --no-cache-dir -r /tmp/api-requirements.txt
+COPY backend/requirements.txt ./requirements.txt
+COPY backend/etl/requirements.txt ./etl/requirements.txt
+COPY scripts/data/requirements.txt /app/scripts/data/requirements.txt
+RUN python -m pip install --no-cache-dir -r requirements.txt
 COPY backend/app ./app
-COPY backend/etl/config/source_config.py ./etl/config/source_config.py
+COPY backend/etl ./etl
+COPY sql /app/sql
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 USER 65532:65532
 EXPOSE 8765
