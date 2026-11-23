@@ -500,11 +500,12 @@ def _same_shape_value(actual,expected):
     return type(actual) is type(expected) and actual==expected
 
 
-def _upstream(snapshot,report,env):
+def _upstream(snapshot,report,env,*,config=None,privacy_key=None):
     try:
         if type(report) is not dict or report.get('schema_version') not in quality.REPORT_VERSIONS:
             _fail('N8_UPSTREAM_GATE_FAILED')
-        config=quality._load_config()
+        if config is None:
+            config=quality._load_config()
         quality._validate_snapshot(snapshot,rules_version=config['rules_version'])
         rules=[]
         for table,kind in quality._CATALOG:
@@ -515,7 +516,7 @@ def _upstream(snapshot,report,env):
             elif kind=='VOLUME_WAVE': rule=quality._volume_wave(table,entry,snapshot,config)
             elif kind=='RECONCILE': rule=quality._reconcile(table,entry)
             elif kind=='MAPPING': rule=quality._check_mapping(table,snapshot)
-            else: rule=quality._check_privacy(table,snapshot,env=env)
+            else: rule=quality._check_privacy(table,snapshot,env=env,key=privacy_key)
             if rule['code']=='STALE': _fail('N8_STALE')
             if kind=='RECONCILE' and rule['status']!='PASS': _fail('N8_RECONCILE_FAILED')
             rules.append(rule)
