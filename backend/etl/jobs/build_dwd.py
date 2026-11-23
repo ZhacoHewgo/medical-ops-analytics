@@ -755,16 +755,78 @@ def _summary_from_audit(a,stats,hashes):
     return dict(schema_version=SCHEMA_VERSION,dataset_id=a['dataset_id'],build_run_id=a['build_run_id'],clean_run_id=a['clean_run_id'],batch_date=a['batch_date'].isoformat(),requested_start=None if a['requested_start'] is None else a['requested_start'].isoformat(),requested_end=None if a['requested_end'] is None else a['requested_end'].isoformat(),effective_start=a['effective_start'].isoformat(),effective_end=a['effective_end'].isoformat(),build_scope='ALL',gate_status='PASS',rows={VISIT:stats['visit_rows'],'dwd_charge_detail':stats['charge_rows']},hashes=hashes,stats=stats)
 
 
-def verify_build_freshness_from_cursor(cursor,*,dataset_id,batch_date,env,report):
-    """Caller owns stable transaction/locks; no transaction control, file I/O or DML."""
+_last_verified_build = None
+
+
+def _verification_tables():
+    from etl.config.source_config import SOURCES
+    from etl.jobs import build_dims as dims, clean_dwd as clean
+
+    tables = [(source["table"], source["columns"] + clean.META, ("source_row_number",))
+              for source in SOURCES.values()]
+    tables.extend((table, spec["columns"], (spec["id_column"],)) for table, spec in clean.TABLES.items())
+    tables.extend((table, [col for col, _, _ in dims._columns(table)], (spec[0][0],))
+                  for table, spec in dims._SPECS.items())
+    tables.extend((
+        (clean.AUDIT, clean.AUDIT_COLUMNS, ("table_name",)),
+        (VISIT, VISIT_COLUMNS, ("visit_type", "visit_id")),
+        (AUDIT, AUDIT_COLUMNS, ("dataset_id",)),
+    ))
+    return tables
+
+
+def _verification_fingerprint(cursor, dataset_id, report, quality_hash, config, key):
+    tables = _verification_tables()
+    names = tuple(table for table, _, _ in tables)
+    cursor.execute(
+        "SELECT TABLE_NAME,COLUMN_NAME,COLUMN_TYPE,IS_NULLABLE,COLLATION_NAME "
+        "FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() "
+        "AND TABLE_NAME IN (" + ",".join(["%s"] * len(names)) + ") ORDER BY TABLE_NAME,ORDINAL_POSITION",
+        names,
+    )
+    columns = cursor.fetchall()
+    cursor.execute("SET SESSION group_concat_max_len=8388608")
+    parts = []
+    for table, fields, keys in tables:
+        data = ",".join(f"`{name}`" for name in fields)
+        order = ",".join(f"`{name}`" for name in keys)
+        cursor.execute(
+            "SELECT row_count,COALESCE(OCTET_LENGTH(digests),0),SHA2(COALESCE(digests,''),256) FROM "
+            f"(SELECT COUNT(*) AS row_count,GROUP_CONCAT(SHA2(JSON_ARRAY({data}),256) ORDER BY {order} SEPARATOR '') AS digests "
+            f"FROM `{table}` WHERE dataset_id=%s) snapshot",
+            (dataset_id,),
+        )
+        count, length, digest = cursor.fetchone()
+        if digest is None or length != 64 * count:
+            return None
+        parts.append((table, digest))
+    value = json.dumps((report, quality_hash, config, columns, parts), sort_keys=True,
+                       ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(key + value.encode("utf-8")).digest()
+
+
+def verify_build_freshness_from_cursor(cursor,*,dataset_id,batch_date,env,report,reuse_exact_snapshot=False):
+    """Verify the build within the caller-owned transaction."""
+    global _last_verified_build
     from etl.jobs import clean_dwd as clean, build_dims as dims
     try:
         _validate_report(report)
         if report['dataset_id']!=dataset_id or report['env']!=env or report['batch_date']!=batch_date: raise ValueError
         _verify_schema(cursor)
-        snapshot=clean.load_quality_snapshot_from_cursor(cursor,batch_date,dataset_id=dataset_id)
         quality_report,quality_hash=_read_quality_report(env,batch_date)
-        dims._upstream(snapshot,quality_report,env)
+        fingerprint = None
+        if reuse_exact_snapshot:
+            config = dims.quality._load_config()
+            key = dims.quality._privacy_key(report, env=env)
+            fingerprint = _verification_fingerprint(cursor, dataset_id, report, quality_hash, config, key)
+            previous = _last_verified_build
+            if fingerprint is not None and previous is not None and fingerprint == previous[0]:
+                return {**previous[1], "hashes": dict(previous[1]["hashes"])}
+        snapshot=clean.load_quality_snapshot_from_cursor(cursor,batch_date,dataset_id=dataset_id)
+        if fingerprint is None:
+            dims._upstream(snapshot,quality_report,env)
+        else:
+            dims._upstream(snapshot,quality_report,env,config=config,privacy_key=key)
         dates=dims._date_snapshot(cursor,snapshot); desired=dims.dimension_rows(dates)
         visits=visit_candidates(snapshot['tables']['dwd_outpatient_visit_detail']['dwd']['rows'],snapshot['tables']['dwd_inpatient_visit_detail']['dwd']['rows'])
         charges=charge_candidates(snapshot['tables']['dwd_charge_detail']['dwd']['rows'],visits)
@@ -792,7 +854,10 @@ def verify_build_freshness_from_cursor(cursor,*,dataset_id,batch_date,env,report
         if not dims._same_shape_value({k:report[k] for k in _RETURN_KEYS},expected): raise ValueError
         if report['node07_report_sha256']!=quality_hash: raise ValueError
         if report['mapping_version']!=a['mapping_version'] or report['privacy_key_id']!=a['privacy_key_id']: raise ValueError
-        return dict(dataset_id=dataset_id,build_run_id=a['build_run_id'],clean_run_id=a['clean_run_id'],batch_date=batch_date,gate_status='PASS',hashes=hashes)
+        identity = dict(dataset_id=dataset_id,build_run_id=a['build_run_id'],clean_run_id=a['clean_run_id'],batch_date=batch_date,gate_status='PASS',hashes=hashes)
+        if fingerprint is not None:
+            _last_verified_build = (fingerprint, {**identity, "hashes": dict(hashes)})
+        return identity
     except OdsError as error:
         raise OdsError(error.code if error.code in SAFE_CODES or error.code in PRIVACY_KEY_ERRORS else 'N8_STALE') from None
     except Exception: raise OdsError('N8_STALE') from None

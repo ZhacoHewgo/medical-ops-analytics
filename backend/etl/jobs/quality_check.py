@@ -635,8 +635,10 @@ def _privacy_key(snapshot, *, env=None):
     return key
 
 
-def _check_privacy(table, snapshot, *, env=None):
-    entry = snapshot["tables"][table]; spec = _SPECS[table]; key = _privacy_key(snapshot, env=env)
+def _check_privacy(table, snapshot, *, env=None, key=None):
+    entry = snapshot["tables"][table]; spec = _SPECS[table]
+    if key is None:
+        key = _privacy_key(snapshot, env=env)
     forbidden = len(set(entry["dwd"]["columns"]) - set(_COMMON + spec[4].split()))
     suppression = 0; shape = 0; mismatch = 0
     sources = {r["source_row_number"]: r for r in entry["source"]["rows"]}

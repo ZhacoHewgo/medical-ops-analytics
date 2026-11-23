@@ -335,15 +335,16 @@ def _transaction(span, grain, dataset_id, batch_date, env, *, write, calculation
         clean._close(connection)
 
 
-def _source(cursor, dataset_id, batch_date, env, *, read_snapshot=False):
+def _source(cursor, dataset_id, batch_date, env, *, read_snapshot=False, reuse_exact_snapshot=False):
     try:
         if read_snapshot:
             dataset, batch, _ = clean._registry(cursor, dataset_id)
         else:
             dataset, batch, _ = build._lock_inputs(cursor, dataset_id)
         report = _report(env, batch)
+        options = {"reuse_exact_snapshot": True} if reuse_exact_snapshot else {}
         identity = build.verify_build_freshness_from_cursor(
-            cursor, dataset_id=dataset, batch_date=batch, env=env, report=report,
+            cursor, dataset_id=dataset, batch_date=batch, env=env, report=report, **options,
         )
     except OdsError as error:
         if error.code in PRIVACY_KEY_ERRORS:
@@ -573,8 +574,10 @@ def _theme_rows(cursor, span, grain, dataset, batch, run, low, high, scopes, met
     return rows
 
 
-def _summary_scope(cursor, span, grain, dataset_id, batch_date, env, *, department, build_run_id, source):
-    dataset, batch, report, run = _source(cursor, dataset_id, batch_date, env, read_snapshot=True)
+def _summary_scope(cursor, span, grain, dataset_id, batch_date, env, *, department, build_run_id, source,
+                   reuse_exact_snapshot=False):
+    options = {"reuse_exact_snapshot": True} if reuse_exact_snapshot else {}
+    dataset, batch, report, run = _source(cursor, dataset_id, batch_date, env, read_snapshot=True, **options)
     if run != build_run_id:
         raise OdsError("N10_SOURCE_STALE")
     low, high = report["effective_start"], report["effective_end"]
@@ -633,7 +636,7 @@ def _calculate_overview(cursor, span, grain, dataset_id, batch_date, env, *, wri
 
     dataset, batch, report, first, last, context = _summary_scope(
         cursor, span, grain, dataset_id, batch_date, env, department=department,
-        build_run_id=build_run_id, source="dwd_visit_detail",
+        build_run_id=build_run_id, source="dwd_visit_detail", reuse_exact_snapshot=True,
     )
     result = dashboard_details.overview(cursor, dataset, first, last, department)
     if dataset == COURSE_DATASET:
