@@ -15,6 +15,7 @@ import MultidimensionalReport from '../views/MultidimensionalReport.vue'
 import UserManage from '../views/admin/UserManage.vue'
 import RoleManage from '../views/admin/RoleManage.vue'
 import DataSourceManage from '../views/admin/DataSourceManage.vue'
+import QualityManage from '../views/admin/QualityManage.vue'
 import TaskManage from '../views/admin/TaskManage.vue'
 
 export function createAppRouter(session, history = createWebHistory(), invalidateViews = () => {}) {
@@ -49,6 +50,8 @@ export function createAppRouter(session, history = createWebHistory(), invalidat
       { path: '/admin/roles', name: 'admin-roles', component: RoleManage, meta: { protected: true, admin: true } },
       { path: '/ops/sources', name: 'ops-sources', component: DataSourceManage,
         meta: { protected: true, ops: true, preload: '/api/ops/sources' } },
+      { path: '/ops/quality', name: 'ops-quality', component: QualityManage,
+        meta: { protected: true, ops: true, preload: '/api/ops/quality' } },
       { path: '/ops/tasks', name: 'ops-tasks', component: TaskManage, meta: { protected: true, ops: true } },
     ],
   })

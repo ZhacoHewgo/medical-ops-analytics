@@ -54,6 +54,7 @@ const reportLinks = [
             :class="{ 'workspace-nav-current': route.name === 'admin-roles' }"><WorkspaceIcon name="user" />用户管理</RouterLink>
           <RouterLink :to="{ name: 'ops-sources' }"
             :class="{ 'workspace-nav-current': route.name === 'ops-tasks' }"><WorkspaceIcon name="storage" />数据源与任务</RouterLink>
+          <RouterLink :to="{ name: 'ops-quality' }"><WorkspaceIcon name="file" />数据质量</RouterLink>
         </div>
       </nav>
     </aside>

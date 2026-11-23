@@ -35,6 +35,7 @@ test('bootstrap registers Pinia and router and uses the protected overview as th
       UserManage: { name: 'UserManage', render: () => null },
       RoleManage: { name: 'RoleManage', render: () => null },
       DataSourceManage: { name: 'DataSourceManage', render: () => null },
+      QualityManage: { name: 'QualityManage', render: () => null },
       TaskManage: { name: 'TaskManage', render: () => null },
       createRouter, createWebHistory: createMemoryHistory, AbortSignal, multidimensionalPath,
     }, { filename: 'src/router/index.js' },
@@ -71,7 +72,7 @@ test('bootstrap registers Pinia and router and uses the protected overview as th
   const router = app.config.globalProperties.$router
   assert.deepEqual(router.getRoutes().map(route => route.path).sort(), [
     '/', '/admin/roles', '/admin/users', '/ask', '/demo', '/disease', '/inpatient', '/login', '/metrics',
-    '/ops/sources', '/ops/tasks', '/outpatient', '/overview', '/reports', '/reports/generate', '/reports/multidimensional',
+    '/ops/quality', '/ops/sources', '/ops/tasks', '/outpatient', '/overview', '/reports', '/reports/generate', '/reports/multidimensional',
     '/resource', '/revenue',
   ])
   assert.deepEqual(router.getRoutes().filter(route => route.meta.retain).map(route => route.path).sort(),
@@ -92,12 +93,18 @@ test('bootstrap registers Pinia and router and uses the protected overview as th
   assert.equal(router.currentRoute.value.query.redirect, '/reports')
   await router.push('/admin/users')
   assert.equal(router.currentRoute.value.name, 'login')
+  await router.push('/ops/quality')
+  assert.equal(router.currentRoute.value.query.redirect, '/ops/quality')
   session.current = { user: { role: 'department' } }
   await router.push('/ops/sources')
+  assert.equal(router.currentRoute.value.query.denied, 'ops')
+  await router.push('/ops/quality')
   assert.equal(router.currentRoute.value.query.denied, 'ops')
   session.current = { user: { role: 'analyst' } }
   await router.push('/ops/tasks')
   assert.equal(router.currentRoute.value.name, 'ops-tasks')
+  await router.push('/ops/quality')
+  assert.equal(router.currentRoute.value.name, 'ops-quality')
   await router.push('/admin/roles')
   assert.equal(router.currentRoute.value.name, 'outpatient')
   assert.equal(router.currentRoute.value.query.denied, 'admin')

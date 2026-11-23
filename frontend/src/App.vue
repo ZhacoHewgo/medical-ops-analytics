@@ -121,7 +121,7 @@ onBeforeUnmount(loader.dispose)
 <template>
   <main id="main" class="workspace dashboard-workspace section-page outpatient-page" tabindex="-1">
     <p v-if="route.query.denied === 'admin'" class="report-error" role="alert">只有管理员可以打开用户管理。</p>
-    <p v-if="route.query.denied === 'ops'" class="report-error" role="alert">当前账号无权查看数据源与任务。</p>
+    <p v-if="route.query.denied === 'ops'" class="report-error" role="alert">当前账号无权查看运维数据。</p>
     <WorkspaceHeading aria-labelledby="page-title" class="outpatient-head">
       <h1 id="page-title">门诊分析</h1>
       <template #tools>

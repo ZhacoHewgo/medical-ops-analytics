@@ -8,6 +8,7 @@ from app.api.routers.outpatient_router import ERRORS, audit_access
 from app.core.auth_store import Account
 from app.core.deps import get_current_user
 from app.llm.kb import kb_answer
+from app.llm.model_client import configured_generator
 from app.llm.nl2sql import run_nl_query
 from app.llm.report_gen import analyze_anomaly, gen_monthly_report, gen_operations_report, gen_weekly_report
 
@@ -50,7 +51,12 @@ def _audited(response, user, resource, produce):
 
 @router.post("/query", summary="按权限回答已认证的聚合指标问题", responses=ERRORS)
 def ask_question(body: Question, response: Response, user: Annotated[Account, Depends(get_current_user)]):
-    return _audited(response, user, "outpatient_qa", lambda: run_nl_query(body.question, user))
+    def report_origin(origin):
+        response.headers["X-NL2SQL-Origin"] = origin
+
+    return _audited(response, user, "outpatient_qa", lambda: run_nl_query(
+        body.question, user, generator=configured_generator(), on_origin=report_origin,
+    ))
 
 
 @router.post("/report", summary="生成认证运营周报或月报", responses=ERRORS)

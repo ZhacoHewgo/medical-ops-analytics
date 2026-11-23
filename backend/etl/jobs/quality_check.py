@@ -40,6 +40,7 @@ _ERRORS = set("DQ_READ_RETRYABLE DQ_ARGUMENTS_INVALID DQ_CONFIG_INVALID DQ_SNAPS
 _REASONS = ("invalid_id_rows", "conflicting_id_rows", "invalid_primary_date_rows")
 _SUPPRESSED = ("patient_name", "id_card", "phone")
 _AMOUNTS = {"fee_amount", "total_fee", "drug_fee", "consumable_fee", "amount"}
+_BUSINESS_ID_CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 _MAPPING = {
     "dept_code": {**{f"SIM_DEPT_{n:02}": f"SIM_DEPT_{n:02}" for n in range(1, 5)}, **{f"SIM_科室{n}_别名": f"SIM_DEPT_{n:02}" for n in range(1, 5)}},
     "visit_type": {s: s for s in ("OUTPATIENT", "INPATIENT")},
@@ -78,7 +79,8 @@ def _id(value, size=128):
 
 
 def _business_id(value):
-    return isinstance(value, str) and 1 <= len(value) <= 128 and value == value.strip() and not any(ord(c) < 32 or 127 <= ord(c) <= 159 for c in value)
+    return (isinstance(value, str) and 1 <= len(value) <= 128 and value == value.strip()
+            and _BUSINESS_ID_CONTROL.search(value) is None)
 
 
 def _day(value):
@@ -193,6 +195,7 @@ def _validate_snapshot(snapshot, batch_date=None, dataset_id=None, *, rules_vers
     _validate_identity(snapshot, batch_date, dataset_id, rules_version=rules_version)
     if not isinstance(snapshot["tables"], dict) or set(snapshot["tables"]) != set(_SPECS):
         _fail("DQ_SNAPSHOT_MISMATCH")
+    snapshot_day = _day(snapshot["batch_date"])
     for table, spec in _SPECS.items():
         entry = snapshot["tables"][table]
         if not isinstance(entry, dict) or set(entry) != {"source", "dwd", "audit"}:
@@ -207,11 +210,12 @@ def _validate_snapshot(snapshot, batch_date=None, dataset_id=None, *, rules_vers
             # Extra DWD columns are counted by PRIVACY, never copied into details.
             if kind == "source" and actual != columns or kind == "dwd" and actual[:len(columns)] != columns:
                 _fail("DQ_SNAPSHOT_MISMATCH")
-            if len(actual) != len(set(actual)) or not all(isinstance(c, str) for c in actual):
+            column_set = set(actual)
+            if len(actual) != len(column_set) or not all(isinstance(c, str) for c in actual):
                 _fail("DQ_SNAPSHOT_MISMATCH")
             numbers = set()
             for row in view["rows"]:
-                if not isinstance(row, dict) or set(row) != set(actual) or row["dataset_id"] != snapshot["dataset_id"]:
+                if not isinstance(row, dict) or set(row) != column_set or row["dataset_id"] != snapshot["dataset_id"]:
                     _fail("DQ_SNAPSHOT_MISMATCH")
                 number = row["source_row_number"]
                 if not _count(number) or number == 0:
@@ -222,7 +226,7 @@ def _validate_snapshot(snapshot, batch_date=None, dataset_id=None, *, rules_vers
                     numbers.add(number)
                     if _day(row["etl_batch_date"]) is None:
                         _fail("DQ_SNAPSHOT_MISMATCH")
-                elif (_day(row["etl_batch_date"]) != _day(snapshot["batch_date"]) or _day(row["source_batch_date"]) is None
+                elif (_day(row["etl_batch_date"]) != snapshot_day or _day(row["source_batch_date"]) is None
                       or not isinstance(row["etl_load_time"], datetime)):
                     _fail("DQ_SNAPSHOT_MISMATCH")
         audit = entry["audit"]
@@ -232,7 +236,7 @@ def _validate_snapshot(snapshot, batch_date=None, dataset_id=None, *, rules_vers
         for field in ("dataset_id", "clean_run_id", "rules_version", "mapping_version", "privacy_key_id"):
             if audit[field] != snapshot[field]:
                 _fail("DQ_SNAPSHOT_MISMATCH")
-        if _day(audit["batch_date"]) != _day(snapshot["batch_date"]) or not isinstance(audit["updated_at"], datetime):
+        if _day(audit["batch_date"]) != snapshot_day or not isinstance(audit["updated_at"], datetime):
             _fail("DQ_SNAPSHOT_MISMATCH")
         if any(not _count(audit[k]) for k in ("source_rows", "accepted_rows", "duplicate_removed", "quarantined_rows")):
             _fail("DQ_CONFIG_INVALID")
@@ -315,11 +319,13 @@ def _candidates(entry, table):
     kept = []
     columns = SOURCES[spec[1]]["columns"]
     for rows in groups.values():
-        if any(any(r[c] != rows[0][c] for c in columns) for r in rows[1:]):
-            losses["conflicting_id_rows"] += len(rows)
-            continue
-        duplicate += len(rows) - 1
-        row = min(rows, key=lambda r: r["source_row_number"])
+        row = rows[0]
+        if len(rows) > 1:
+            if any(any(other[c] != row[c] for c in columns) for other in rows[1:]):
+                losses["conflicting_id_rows"] += len(rows)
+                continue
+            duplicate += len(rows) - 1
+            row = min(rows, key=lambda r: r["source_row_number"])
         if _day(row[spec[3]]) is None:
             losses["invalid_primary_date_rows"] += 1
         else:

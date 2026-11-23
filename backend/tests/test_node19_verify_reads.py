@@ -469,16 +469,17 @@ def _snapshot_cursor(monkeypatch):
     from datetime import date
     from etl.jobs import clean_dwd as clean
 
-    audit = dict(clean_run_id="c" * 32, batch_date=date(2026, 1, 4), rules_version="r1",
-                 mapping_version="m1", privacy_key_id="k" * 64,
+    dataset = "SIM"
+    audit = dict(clean_run_id="c" * 32, batch_date=date(2026, 1, 4),
+                 rules_version=clean._config()["rules_version"],
+                 mapping_version=clean.course_mapping.version(dataset), privacy_key_id="k" * 64,
                  source_sha256="s" * 64, result_sha256="r" * 64)
-    monkeypatch.setattr(clean, "_config", lambda: dict(rules_version="r1", mapping_version="m1"))
-    monkeypatch.setattr(clean, "_registry", lambda cursor, dataset: ("SIM", "2026-01-04", None))
+    monkeypatch.setattr(clean, "_registry", lambda cursor, requested: (dataset, "2026-01-04", None))
     monkeypatch.setattr(clean, "_verify", lambda cursor: None)
     monkeypatch.setattr(clean, "_audits", lambda cursor, dataset: {t: dict(audit) for t in clean.TABLES})
     monkeypatch.setattr(clean, "_source", lambda cursor, table, dataset: [])
     cursor = _CapturingCursor()
-    clean.load_quality_snapshot_from_cursor(cursor, "2026-01-04", dataset_id="SIM")
+    clean.load_quality_snapshot_from_cursor(cursor, "2026-01-04", dataset_id=dataset)
     return cursor
 
 
